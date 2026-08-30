@@ -24,7 +24,28 @@ Each phase must be runnable and tested before the next one starts — no phase i
   exception). Staging/production deploy automation deferred — no target infrastructure exists yet to
   deploy to; everything up to a verified, working container image is already automated. See `phase5.md`.
 
-This closes out the original roadmap. Later, not yet scheduled: fine-tuning (LoRA/QLoRA) pipeline,
-self-hosted inference via vLLM, Next.js web app, Kubernetes migration, staging/production hosts
-(needed before Phase 5's deploy automation can be finished), a second role + requester/approver
-separation for tool approvals (see phase3.md), agent-run resume-after-approval (see phase4.md).
+This closes out the original backend roadmap. Later, not yet scheduled: fine-tuning (LoRA/QLoRA)
+pipeline, self-hosted inference via vLLM, Kubernetes migration, staging/production hosts (needed
+before Phase 5's deploy automation can be finished), a second role + requester/approver separation
+for tool approvals (see phase3.md), agent-run resume-after-approval (see phase4.md).
+
+## Web app (`apps/web`) — separate phase track, own spec
+
+Runs on its own 5-phase plan from a second master-prompt spec, unrelated to the backend phase
+numbers above.
+
+- **Web Phase 1 — UI, mock data** (done): full premium chat/workspace UI (layout, sidebar, chat
+  home, chat interface, composer, message rendering, dark/light theme, responsive/mobile), running
+  entirely on mock data with a `lib/api/*.ts` abstraction seam so Phase 2 can swap in real calls
+  without touching components. See `web-phase1.md`.
+- **Web Phase 2 — Auth, conversation/streaming API, file upload** (not started): wire `lib/api/*`
+  to the real backend above (login/register/session, `POST /api/v1/chat` + `/chat/stream`, real
+  file upload processing).
+- **Web Phase 3 — Knowledge/Agents/Tools/Settings pages** (not started): replace the current
+  placeholder pages with real functionality backed by the corresponding backend systems (Phases
+  2–3 above).
+- **Web Phase 4 — Real AI backend integration hardening** (not started): memory/RAG/model-router
+  behavior surfaced properly in the UI (citations, tool-call detail views, model selector wired to
+  real model list).
+- **Web Phase 5 — Production hardening** (not started): monitoring, security, multi-tenant UI
+  concerns, scaling — mirrors the backend's own Phase 5 concerns on the frontend side.
