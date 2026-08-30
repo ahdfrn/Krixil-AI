@@ -33,6 +33,10 @@ interface ChatState {
   renameConversation: (id: string, title: string) => Promise<void>;
   deleteConversation: (id: string) => Promise<void>;
   setSelectedModel: (model: ModelId) => void;
+  /** Called on sign-out (manual or a silent 401) — clears any in-memory data from the previous
+   * session so it can't briefly reappear (e.g. in the command menu) before a fresh fetch lands
+   * for whoever logs in next in the same tab. See web-phase5.md. */
+  resetChatState: () => void;
 }
 
 let abortController: AbortController | null = null;
@@ -237,4 +241,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   setSelectedModel: (model) => set({ selectedModel: model }),
+
+  resetChatState: () => {
+    abortController?.abort();
+    set({
+      conversations: [],
+      messagesByConversation: {},
+      isLoadingConversations: true,
+      isLoadingMessages: false,
+      generatingConversationId: null,
+    });
+  },
 }));

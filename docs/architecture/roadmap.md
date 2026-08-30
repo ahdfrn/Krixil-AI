@@ -62,5 +62,9 @@ numbers above.
   push — citations (Web Phase 2), tool-call/agent-run detail views (Web Phase 3), and the model
   selector wired to a real list (this backend roadmap's 2026-08-30 addendum above; today that list
   has exactly one real entry, honestly, not a fabricated multi-model catalog).
-- **Web Phase 5 — Production hardening** (not started): monitoring, security, multi-tenant UI
-  concerns, scaling — mirrors the backend's own Phase 5 concerns on the frontend side.
+- **Web Phase 5 — Production hardening** (done): frontend CI (lint/build/`npm audit`, previously
+  zero coverage), a real cross-tenant UI data-leak fix on logout→re-login (`chat-store.ts`'s
+  `resetChatState()`), branded error boundaries (`error.tsx`/`global-error.tsx`, neither existed
+  before), and conservative security headers. See `web-phase5.md` for what was audited, what was
+  found, and what's deliberately still deferred (CSP, actual scaling work — no deploy target
+  exists on either side yet).

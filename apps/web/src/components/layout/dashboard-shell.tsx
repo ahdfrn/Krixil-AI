@@ -15,10 +15,15 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
   const hasHydrated = useAuthStore((s) => s.hasHydrated);
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated());
   const loadConversations = useChatStore((s) => s.loadConversations);
+  const resetChatState = useChatStore((s) => s.resetChatState);
 
   useEffect(() => {
     if (!hasHydrated) return;
     if (!isAuthenticated) {
+      // Clears any previous session's in-memory data (conversations, messages) so it can't
+      // briefly reappear — e.g. in the command menu, which has no loading gate of its own — if a
+      // different tenant logs in on the same tab before the next fetch lands. See web-phase5.md.
+      resetChatState();
       router.replace("/login");
       return;
     }
