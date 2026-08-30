@@ -10,12 +10,10 @@ import { FileAttachmentChip, formatBytes } from "@/components/chat/file-attachme
 import { ModelSelector } from "@/components/chat/model-selector";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { ApiError } from "@/lib/api/client";
-import { uploadDocument } from "@/lib/api/documents";
+import { ACCEPTED_DOCUMENT_EXTENSIONS, uploadDocument } from "@/lib/api/documents";
 import { cn } from "@/lib/utils";
 import { useChatStore } from "@/stores/chat-store";
 import type { ModelId } from "@/types/chat";
-
-const ACCEPTED_EXTENSIONS = [".pdf", ".docx", ".txt", ".csv"];
 
 export function ChatComposer({
   onSend,
@@ -60,7 +58,7 @@ export function ChatComposer({
     for (const file of list) {
       const id = nanoid(8);
       const ext = file.name.slice(file.name.lastIndexOf(".")).toLowerCase();
-      if (!ACCEPTED_EXTENSIONS.includes(ext)) {
+      if (!ACCEPTED_DOCUMENT_EXTENSIONS.includes(ext)) {
         toast.error(`"${file.name}" isn't a supported file type — allowed: pdf, docx, txt, csv.`);
         continue;
       }
@@ -165,7 +163,7 @@ export function ChatComposer({
               type="file"
               multiple
               className="hidden"
-              accept={ACCEPTED_EXTENSIONS.join(",")}
+              accept={ACCEPTED_DOCUMENT_EXTENSIONS.join(",")}
               onChange={(e) => {
                 if (e.target.files?.length) addFiles(e.target.files);
                 e.target.value = "";
@@ -179,7 +177,7 @@ export function ChatComposer({
             <ComposerIconButton
               label="Tools"
               icon={Wrench}
-              onClick={() => toast.info("Tool selection UI lands with Phase 3.")}
+              onClick={() => toast.info("Choosing tools per-message isn't supported yet — see the Tools page for what Krixil can use.")}
             />
             <ComposerIconButton
               label="Voice input"

@@ -1,5 +1,7 @@
 import { apiFetch } from "@/lib/api/client";
 
+export const ACCEPTED_DOCUMENT_EXTENSIONS = [".pdf", ".docx", ".txt", ".csv"];
+
 export interface DocumentOut {
   id: string;
   filename: string;
@@ -26,4 +28,12 @@ export async function uploadDocument(file: File, signal?: AbortSignal): Promise<
     body: formData,
     signal,
   });
+}
+
+export async function listDocuments(): Promise<DocumentOut[]> {
+  return apiFetch<DocumentOut[]>("/documents");
+}
+
+export async function deleteDocument(id: string): Promise<void> {
+  return apiFetch<void>(`/documents/${id}`, { method: "DELETE" });
 }

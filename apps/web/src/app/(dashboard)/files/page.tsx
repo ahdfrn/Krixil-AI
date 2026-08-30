@@ -8,7 +8,7 @@ export default function FilesPage() {
       icon={FileText}
       title="Files"
       description="Everything you've uploaded across every conversation, in one place."
-      phase="Phase 3"
+      phase="a later phase"
     />
   );
 }

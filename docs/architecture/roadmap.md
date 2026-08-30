@@ -43,9 +43,11 @@ numbers above.
   `POST /documents` upload). See `web-phase2.md` for the real API contract found (narrower than
   the spec implied in places — no refresh token, no conversation rename/delete/pin/archive
   endpoints, no tool-call progress events) and what's deliberately deferred as a result.
-- **Web Phase 3 — Knowledge/Agents/Tools/Settings pages** (not started): replace the current
-  placeholder pages with real functionality backed by the corresponding backend systems (Phases
-  2–3 above).
+- **Web Phase 3 — Knowledge/Agents/Tools/Settings pages** (done): real `/knowledge` (upload,
+  search, delete), `/tools` (invoke the 3 real tools, real approve/reject on pending executions),
+  `/agents` (run a real agent goal, render the real step trace, handle `waiting_approval` honestly
+  since the backend never auto-resumes a paused run), and Settings' Usage + Account tabs wired to
+  real data. See `web-phase3.md` for the real API contract found and what's deliberately deferred.
 - **Web Phase 4 — Real AI backend integration hardening** (not started): memory/RAG/model-router
   behavior surfaced properly in the UI (citations, tool-call detail views, model selector wired to
   real model list).
