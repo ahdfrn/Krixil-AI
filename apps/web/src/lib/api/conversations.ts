@@ -50,3 +50,14 @@ export async function getConversationMessages(conversationId: string): Promise<C
   const detail = await apiFetch<ConversationDetailOut>(`/conversations/${conversationId}`);
   return detail.messages.map((m) => toMessage(m, conversationId));
 }
+
+export async function renameConversation(conversationId: string, title: string): Promise<void> {
+  await apiFetch<ConversationOut>(`/conversations/${conversationId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ title }),
+  });
+}
+
+export async function deleteConversation(conversationId: string): Promise<void> {
+  await apiFetch<void>(`/conversations/${conversationId}`, { method: "DELETE" });
+}

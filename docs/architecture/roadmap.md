@@ -24,10 +24,15 @@ Each phase must be runnable and tested before the next one starts — no phase i
   exception). Staging/production deploy automation deferred — no target infrastructure exists yet to
   deploy to; everything up to a verified, working container image is already automated. See `phase5.md`.
 
-This closes out the original backend roadmap. Later, not yet scheduled: fine-tuning (LoRA/QLoRA)
-pipeline, self-hosted inference via vLLM, Kubernetes migration, staging/production hosts (needed
-before Phase 5's deploy automation can be finished), a second role + requester/approver separation
-for tool approvals (see phase3.md), agent-run resume-after-approval (see phase4.md).
+This closes out the original backend roadmap. **Addendum (2026-08-30)**: conversation rename
+(`PATCH /conversations/{id}`) and delete (`DELETE /conversations/{id}`) added, plus a related
+tenant+user-scoping tightening on `GET /conversations/{id}` — see `phase1.md`'s addendum section.
+Later, not yet scheduled: fine-tuning (LoRA/QLoRA) pipeline, self-hosted inference via vLLM,
+Kubernetes migration, staging/production hosts (needed before Phase 5's deploy automation can be
+finished), a model-listing endpoint + per-request model selection, a second role + requester/
+approver separation for tool approvals (needs an invite/add-user endpoint first — see phase3.md),
+agent-run resume-after-approval (see phase4.md), conversation pin/archive (needs a schema
+migration).
 
 ## Web app (`apps/web`) — separate phase track, own spec
 
@@ -41,8 +46,9 @@ numbers above.
 - **Web Phase 2 — Auth, conversation/streaming API, file upload** (done): `lib/api/*` wired to the
   real backend (register/login, real SSE `POST /chat/stream`, `GET /conversations`, real
   `POST /documents` upload). See `web-phase2.md` for the real API contract found (narrower than
-  the spec implied in places — no refresh token, no conversation rename/delete/pin/archive
-  endpoints, no tool-call progress events) and what's deliberately deferred as a result.
+  the spec implied in places — no refresh token, no tool-call progress events) and what's
+  deliberately deferred as a result. (Conversation rename/delete were added for real afterward —
+  see the backend roadmap's 2026-08-30 addendum above; pin/archive are still deferred.)
 - **Web Phase 3 — Knowledge/Agents/Tools/Settings pages** (done): real `/knowledge` (upload,
   search, delete), `/tools` (invoke the 3 real tools, real approve/reject on pending executions),
   `/agents` (run a real agent goal, render the real step trace, handle `waiting_approval` honestly

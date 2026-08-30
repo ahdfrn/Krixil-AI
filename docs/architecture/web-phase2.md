@@ -74,7 +74,8 @@ or crashes against the real API. Every one of these gaps is called out explicitl
   and `chat-history-item.tsx`, wired to a "not available yet" toast — the same pattern this
   codebase already used for Tools/Voice-input in Phase 1. The store actions themselves were
   removed (not left as unreachable dead code) since nothing calls them anymore. No backend changes
-  in this phase.
+  in this phase. (Rename and delete were later added for real — see `phase1.md`'s 2026-08-30
+  addendum and the corresponding frontend changes; pin/archive are still exactly as described here.)
 - **Model selector stays cosmetic.** No backend endpoint lists models and `ChatRequest` has no
   model field — unchanged from Phase 1, where selecting a model never affected the response either.
 
@@ -102,8 +103,9 @@ back in with the same tenant slug, confirm the conversation list reloads for rea
 
 ## What's deliberately deferred
 
-- Rename/delete/pin/archive conversations — no backend endpoints exist; would need new routes
-  (rename/delete) and a schema migration (pin/archive) that are out of this phase's scope.
+- ~~Rename/delete/pin/archive conversations~~ — rename/delete were added later for real (see
+  `phase1.md`'s 2026-08-30 addendum). Pin/archive still have no backend endpoints; they'd need a
+  schema migration that's out of scope for now.
 - Model selection actually affecting which model answers — no backend endpoint or request field
   exists for it.
 - Any session-refresh/renewal story — the backend issues a flat 60-minute token with no refresh

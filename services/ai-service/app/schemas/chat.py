@@ -42,3 +42,7 @@ class ConversationOut(BaseModel):
 
 class ConversationDetailOut(ConversationOut):
     messages: list[MessageOut]
+
+
+class ConversationRenameRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=255)

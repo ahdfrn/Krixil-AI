@@ -1,7 +1,7 @@
 import json
 import uuid
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, status
 from fastapi.responses import StreamingResponse
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -9,11 +9,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.ai.base import ModelMessage
 from app.ai.router import ModelRouter
 from app.chat.service import (
+    delete_conversation,
     get_context_messages,
     get_conversation_or_404,
     get_or_create_conversation,
     list_conversations,
     list_messages,
+    rename_conversation,
     save_message,
 )
 from app.core.logging import get_logger
@@ -29,6 +31,7 @@ from app.schemas.chat import (
     ChatResponse,
     ConversationDetailOut,
     ConversationOut,
+    ConversationRenameRequest,
     MessageOut,
 )
 from app.tenancy.context import TenantContext
@@ -204,3 +207,23 @@ async def get_conversation(
         created_at=conversation.created_at,
         messages=[MessageOut.model_validate(m) for m in messages],
     )
+
+
+@router.patch("/conversations/{conversation_id}", response_model=ConversationOut)
+async def rename_conversation_route(
+    conversation_id: uuid.UUID,
+    payload: ConversationRenameRequest,
+    tenant_ctx: TenantContext = Depends(get_tenant_context),
+    session: AsyncSession = Depends(get_session),
+) -> ConversationOut:
+    conversation = await rename_conversation(session, tenant_ctx, conversation_id, payload.title)
+    return ConversationOut.model_validate(conversation)
+
+
+@router.delete("/conversations/{conversation_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_conversation_route(
+    conversation_id: uuid.UUID,
+    tenant_ctx: TenantContext = Depends(get_tenant_context),
+    session: AsyncSession = Depends(get_session),
+) -> None:
+    await delete_conversation(session, tenant_ctx, conversation_id)

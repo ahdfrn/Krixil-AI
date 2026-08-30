@@ -38,3 +38,32 @@ Offline suite: 29/29 tests pass (`CloudModelProvider` tested against a mocked HT
 migration applied cleanly on top of existing Phase 0 data, a real chat call populated the expected
 `krixil:short_term:*` and `krixil:ratelimit:chat:*` Redis keys, and wrote a matching row to
 `usage_records` in Postgres.
+
+## Addendum (2026-08-30): conversation rename & delete
+
+Added after all 6 original phases were complete, prompted by the web app's frontend having had
+Rename/Delete UI since Web Phase 1 with nothing real to call. `PATCH /conversations/{id}`
+(`ConversationRenameRequest{title}`) and `DELETE /conversations/{id}` in `app/chat/router.py` /
+`service.py`, no schema change needed (`title` already existed; `Message.conversation_id` already
+had `ondelete="CASCADE"`, mirroring `rag/documents.py`'s `delete_document` pattern exactly). No new
+permission gate — conversations were never behind the Tool System's approval model, matching how
+documents' own REST delete route works.
+
+While extending `get_conversation_or_404` for these, tightened it to also filter by
+`Conversation.user_id` (previously tenant-only) — it now matches `list_conversations`'s existing
+per-user scoping, closing a real gap where any user in a tenant could read/act on another user's
+conversation by id. This also affects `GET /conversations/{id}` and the `conversation_id` passed to
+`/chat`/`/chat/stream`. Not covered by an automated test: same-tenant-different-user isolation —
+there's no way to create a second user in one tenant via the API yet (registration always creates a
+new tenant), so that scenario isn't constructible through the real API surface without either raw
+DB manipulation in a test or an invite/add-user endpoint, which is separate, larger scope.
+
+Frontend: `apps/web`'s Rename/Delete menu items (in `chat-header.tsx` and `chat-history-item.tsx`)
+now call these endpoints for real, with optimistic local updates that roll back on failure. Pin and
+Archive are unchanged — still "not available yet" toasts, since they'd need new DB columns.
+
+Verified: `pytest` (85/85, +6 new tests), `ruff`, `mypy` all clean. Live: renamed a conversation via
+both the header and the sidebar item and confirmed it survived a reload (real backend truth, not
+local state); deleted the open conversation, confirmed navigation to `/chat`, and confirmed after a
+reload it was genuinely gone (not just removed from local state) while the untouched conversation
+remained; confirmed Pin/Archive still show their unchanged stub toast. Zero console/page errors.

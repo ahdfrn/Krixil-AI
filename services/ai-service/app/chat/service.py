@@ -29,18 +29,40 @@ async def get_or_create_conversation(
 async def get_conversation_or_404(
     session: AsyncSession, tenant_ctx: TenantContext, conversation_id: uuid.UUID
 ) -> Conversation:
-    # tenant_id is always part of the WHERE clause — a conversation belonging to another
+    # tenant_id AND user_id are always part of the WHERE clause — matching list_conversations'
+    # scoping below, so a conversation belonging to another tenant OR another user in the same
     # tenant returns 404 exactly like a non-existent one, never a 403 that would confirm it exists.
     conversation = (
         await session.execute(
             select(Conversation).where(
-                Conversation.id == conversation_id, Conversation.tenant_id == tenant_ctx.tenant_id
+                Conversation.id == conversation_id,
+                Conversation.tenant_id == tenant_ctx.tenant_id,
+                Conversation.user_id == tenant_ctx.user_id,
             )
         )
     ).scalar_one_or_none()
     if conversation is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found")
     return conversation
+
+
+async def rename_conversation(
+    session: AsyncSession, tenant_ctx: TenantContext, conversation_id: uuid.UUID, title: str
+) -> Conversation:
+    conversation = await get_conversation_or_404(session, tenant_ctx, conversation_id)
+    conversation.title = title
+    await session.flush()
+    return conversation
+
+
+async def delete_conversation(
+    session: AsyncSession, tenant_ctx: TenantContext, conversation_id: uuid.UUID
+) -> None:
+    # Message.conversation_id has ON DELETE CASCADE, so deleting the Conversation row removes its
+    # messages too — same pattern as rag/documents.py's delete_document. get_session()'s dependency
+    # commits after the route handler returns, so no explicit commit here either.
+    conversation = await get_conversation_or_404(session, tenant_ctx, conversation_id)
+    await session.delete(conversation)
 
 
 async def list_conversations(

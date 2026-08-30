@@ -45,6 +45,100 @@ async def test_chat_with_unknown_conversation_id_returns_404(client):
     assert resp.status_code == 404
 
 
+async def test_rename_conversation_updates_title(client):
+    registered = await register(client)
+    headers = auth_headers(registered["access_token"])
+
+    resp = await client.post("/api/v1/chat", json={"message": "hello"}, headers=headers)
+    conversation_id = resp.json()["conversation_id"]
+
+    rename_resp = await client.patch(
+        f"/api/v1/conversations/{conversation_id}",
+        json={"title": "Renamed conversation"},
+        headers=headers,
+    )
+    assert rename_resp.status_code == 200
+    assert rename_resp.json()["title"] == "Renamed conversation"
+
+    detail_resp = await client.get(f"/api/v1/conversations/{conversation_id}", headers=headers)
+    assert detail_resp.json()["title"] == "Renamed conversation"
+
+
+async def test_rename_unknown_conversation_returns_404(client):
+    registered = await register(client)
+    headers = auth_headers(registered["access_token"])
+
+    resp = await client.patch(
+        "/api/v1/conversations/00000000-0000-0000-0000-000000000000",
+        json={"title": "New title"},
+        headers=headers,
+    )
+    assert resp.status_code == 404
+
+
+async def test_cannot_rename_another_tenants_conversation(client):
+    tenant_a = await register(client, tenant_name="Tenant A", email="a@convrename.dev")
+    tenant_b = await register(client, tenant_name="Tenant B", email="b@convrename.dev")
+    headers_a = auth_headers(tenant_a["access_token"])
+    headers_b = auth_headers(tenant_b["access_token"])
+
+    resp = await client.post("/api/v1/chat", json={"message": "hello"}, headers=headers_a)
+    conversation_id = resp.json()["conversation_id"]
+
+    rename_resp = await client.patch(
+        f"/api/v1/conversations/{conversation_id}",
+        json={"title": "Hijacked"},
+        headers=headers_b,
+    )
+    assert rename_resp.status_code == 404
+
+
+async def test_delete_conversation_removes_it_and_its_messages(client):
+    registered = await register(client)
+    headers = auth_headers(registered["access_token"])
+
+    resp = await client.post("/api/v1/chat", json={"message": "hello"}, headers=headers)
+    conversation_id = resp.json()["conversation_id"]
+
+    delete_resp = await client.delete(f"/api/v1/conversations/{conversation_id}", headers=headers)
+    assert delete_resp.status_code == 204
+
+    list_resp = await client.get("/api/v1/conversations", headers=headers)
+    assert list_resp.json() == []
+
+    detail_resp = await client.get(f"/api/v1/conversations/{conversation_id}", headers=headers)
+    assert detail_resp.status_code == 404
+
+
+async def test_delete_unknown_conversation_returns_404(client):
+    registered = await register(client)
+    headers = auth_headers(registered["access_token"])
+
+    resp = await client.delete(
+        "/api/v1/conversations/00000000-0000-0000-0000-000000000000", headers=headers
+    )
+    assert resp.status_code == 404
+
+
+async def test_cannot_delete_another_tenants_conversation(client):
+    tenant_a = await register(client, tenant_name="Tenant A", email="a@convdelete.dev")
+    tenant_b = await register(client, tenant_name="Tenant B", email="b@convdelete.dev")
+    headers_a = auth_headers(tenant_a["access_token"])
+    headers_b = auth_headers(tenant_b["access_token"])
+
+    resp = await client.post("/api/v1/chat", json={"message": "hello"}, headers=headers_a)
+    conversation_id = resp.json()["conversation_id"]
+
+    delete_resp = await client.delete(
+        f"/api/v1/conversations/{conversation_id}", headers=headers_b
+    )
+    assert delete_resp.status_code == 404
+
+    # Still there for tenant A, untouched by tenant B's failed attempt.
+    list_resp = await client.get("/api/v1/conversations", headers=headers_a)
+    assert len(list_resp.json()) == 1
+
+
 async def test_chat_stream_emits_conversation_chunks_and_done(client):
     registered = await register(client)
     headers = auth_headers(registered["access_token"])

@@ -3,7 +3,13 @@ import { toast } from "sonner";
 import { create } from "zustand";
 
 import { streamMessage } from "@/lib/api/chat";
-import { getConversationMessages, listConversations } from "@/lib/api/conversations";
+import { ApiError } from "@/lib/api/client";
+import {
+  deleteConversation as deleteConversationApi,
+  getConversationMessages,
+  listConversations,
+  renameConversation as renameConversationApi,
+} from "@/lib/api/conversations";
 import type { ChatMessage, Conversation, ModelId } from "@/types/chat";
 
 interface ChatState {
@@ -24,6 +30,8 @@ interface ChatState {
    */
   sendMessage: (conversationId: string | null, content: string) => Promise<string>;
   stopGenerating: () => void;
+  renameConversation: (id: string, title: string) => Promise<void>;
+  deleteConversation: (id: string) => Promise<void>;
   setSelectedModel: (model: ModelId) => void;
 }
 
@@ -191,6 +199,38 @@ export const useChatStore = create<ChatState>((set, get) => ({
       },
       generatingConversationId: null,
     }));
+  },
+
+  renameConversation: async (id, title) => {
+    const previous = get().conversations;
+    set((state) => ({
+      conversations: state.conversations.map((c) => (c.id === id ? { ...c, title } : c)),
+    }));
+    try {
+      await renameConversationApi(id, title);
+    } catch (err) {
+      set({ conversations: previous });
+      toast.error(err instanceof ApiError ? err.message : "Couldn't rename that conversation.");
+    }
+  },
+
+  deleteConversation: async (id) => {
+    const previousConversations = get().conversations;
+    const previousMessages = get().messagesByConversation;
+    set((state) => {
+      const rest = { ...state.messagesByConversation };
+      delete rest[id];
+      return {
+        conversations: state.conversations.filter((c) => c.id !== id),
+        messagesByConversation: rest,
+      };
+    });
+    try {
+      await deleteConversationApi(id);
+    } catch (err) {
+      set({ conversations: previousConversations, messagesByConversation: previousMessages });
+      toast.error(err instanceof ApiError ? err.message : "Couldn't delete that conversation.");
+    }
   },
 
   setSelectedModel: (model) => set({ selectedModel: model }),
