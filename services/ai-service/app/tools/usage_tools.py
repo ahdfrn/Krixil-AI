@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
@@ -16,7 +16,7 @@ class UsageSummaryInput(BaseModel):
 async def _usage_summary_handler(
     session: AsyncSession, tenant_ctx: TenantContext, params: UsageSummaryInput
 ) -> dict:
-    since = datetime.now(timezone.utc) - timedelta(days=params.days)
+    since = datetime.now(UTC) - timedelta(days=params.days)
 
     totals_row = (
         await session.execute(
@@ -48,7 +48,12 @@ async def _usage_summary_handler(
         "prompt_tokens": prompt_tokens,
         "completion_tokens": completion_tokens,
         "by_model": [
-            {"model": model, "request_count": count, "prompt_tokens": p_tok, "completion_tokens": c_tok}
+            {
+                "model": model,
+                "request_count": count,
+                "prompt_tokens": p_tok,
+                "completion_tokens": c_tok,
+            }
             for model, count, p_tok, c_tok in by_model_rows
         ],
     }
@@ -57,7 +62,8 @@ async def _usage_summary_handler(
 register_tool(
     Tool(
         name="usage.get_summary",
-        description="Get a summary of this tenant's AI usage (requests and token counts) over a recent period.",
+        description="Get a summary of this tenant's AI usage (requests and token counts) over a "
+        "recent period.",
         input_model=UsageSummaryInput,
         risk_level=RiskLevel.LOW,
         required_permission="usage:read",

@@ -62,7 +62,9 @@ async def test_stream_yields_content_deltas(provider):
                 200, content=sse_body.encode(), headers={"content-type": "text/event-stream"}
             )
         )
-        chunks = [delta async for delta in provider.stream([ModelMessage(role="user", content="hi")])]
+        chunks = [
+            delta async for delta in provider.stream([ModelMessage(role="user", content="hi")])
+        ]
 
     assert chunks == ["Hello", " world"]
 
@@ -80,7 +82,9 @@ async def test_embeddings_returns_vectors(provider):
 
 
 async def test_tool_call_sends_tools_and_parses_structured_call(provider):
-    tool = ToolSchema(name="knowledge.search", description="Search docs", parameters={"type": "object"})
+    tool = ToolSchema(
+        name="knowledge.search", description="Search docs", parameters={"type": "object"}
+    )
 
     with respx.mock(assert_all_called=True) as mock:
         route = mock.post(f"{BASE_URL}/chat/completions").mock(
@@ -107,7 +111,9 @@ async def test_tool_call_sends_tools_and_parses_structured_call(provider):
                 },
             )
         )
-        response = await provider.tool_call([ModelMessage(role="user", content="search for pgvector")], [tool])
+        response = await provider.tool_call(
+            [ModelMessage(role="user", content="search for pgvector")], [tool]
+        )
 
     sent_body = json.loads(route.calls.last.request.content)
     assert sent_body["tools"][0]["function"]["name"] == "knowledge.search"
@@ -123,7 +129,10 @@ async def test_tool_call_with_no_tool_calls_returns_plain_content(provider):
         mock.post(f"{BASE_URL}/chat/completions").mock(
             return_value=httpx.Response(
                 200,
-                json={"model": "test-model", "choices": [{"message": {"content": "just an answer"}}]},
+                json={
+                    "model": "test-model",
+                    "choices": [{"message": {"content": "just an answer"}}],
+                },
             )
         )
         response = await provider.tool_call([ModelMessage(role="user", content="hi")], [])

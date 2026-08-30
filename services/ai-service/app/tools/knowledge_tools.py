@@ -22,7 +22,12 @@ async def _knowledge_search_handler(
 ) -> dict:
     provider = model_router.get_provider()
     results = await hybrid_search(
-        session, tenant_ctx, provider, params.query, top_k=params.top_k, document_id=params.document_id
+        session,
+        tenant_ctx,
+        provider,
+        params.query,
+        top_k=params.top_k,
+        document_id=params.document_id,
     )
     return {
         "results": [

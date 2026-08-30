@@ -9,6 +9,7 @@ from app.ai.base import ModelMessage
 from app.memory import short_term
 from app.models.conversation import Conversation
 from app.models.message import Message
+from app.observability.metrics import SHORT_TERM_MEMORY_CACHE
 from app.tenancy.context import TenantContext
 
 
@@ -42,10 +43,15 @@ async def get_conversation_or_404(
     return conversation
 
 
-async def list_conversations(session: AsyncSession, tenant_ctx: TenantContext) -> list[Conversation]:
+async def list_conversations(
+    session: AsyncSession, tenant_ctx: TenantContext
+) -> list[Conversation]:
     result = await session.execute(
         select(Conversation)
-        .where(Conversation.tenant_id == tenant_ctx.tenant_id, Conversation.user_id == tenant_ctx.user_id)
+        .where(
+            Conversation.tenant_id == tenant_ctx.tenant_id,
+            Conversation.user_id == tenant_ctx.user_id,
+        )
         .order_by(Conversation.created_at.desc())
     )
     return list(result.scalars().all())
@@ -56,14 +62,20 @@ async def list_messages(
 ) -> list[Message]:
     result = await session.execute(
         select(Message)
-        .where(Message.tenant_id == tenant_ctx.tenant_id, Message.conversation_id == conversation_id)
+        .where(
+            Message.tenant_id == tenant_ctx.tenant_id, Message.conversation_id == conversation_id
+        )
         .order_by(Message.created_at.asc())
     )
     return list(result.scalars().all())
 
 
 async def save_message(
-    session: AsyncSession, tenant_ctx: TenantContext, conversation_id: uuid.UUID, role: str, content: str
+    session: AsyncSession,
+    tenant_ctx: TenantContext,
+    conversation_id: uuid.UUID,
+    role: str,
+    content: str,
 ) -> Message:
     message = Message(
         tenant_id=tenant_ctx.tenant_id, conversation_id=conversation_id, role=role, content=content
@@ -82,8 +94,10 @@ async def get_context_messages(
     DB read, never to lost or wrong history."""
     cached = await short_term.get_recent_messages(redis, tenant_ctx.tenant_id, conversation_id)
     if cached is not None:
+        SHORT_TERM_MEMORY_CACHE.labels(result="hit").inc()
         return cached
 
+    SHORT_TERM_MEMORY_CACHE.labels(result="miss").inc()
     history = await list_messages(session, tenant_ctx, conversation_id)
     model_messages = [ModelMessage(role=m.role, content=m.content) for m in history]
     await short_term.replace(redis, tenant_ctx.tenant_id, conversation_id, model_messages)

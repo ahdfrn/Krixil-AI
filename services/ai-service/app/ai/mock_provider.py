@@ -7,7 +7,9 @@ from collections.abc import AsyncIterator
 from app.ai.base import ModelMessage, ModelProvider, ModelResponse, ToolCallRequest, ToolSchema
 from app.core.config import get_settings
 
-_UUID_RE = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
+_UUID_RE = re.compile(
+    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+)
 
 
 def _pseudo_embedding(text: str, dim: int) -> list[float]:

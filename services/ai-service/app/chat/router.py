@@ -22,8 +22,15 @@ from app.core.usage import record_usage
 from app.db.redis import get_redis
 from app.db.session import AsyncSessionLocal, get_session
 from app.memory import short_term
+from app.observability.metrics import MODEL_REQUEST_DURATION, TOKEN_USAGE
 from app.rag.context import build_rag_context
-from app.schemas.chat import ChatRequest, ChatResponse, ConversationDetailOut, ConversationOut, MessageOut
+from app.schemas.chat import (
+    ChatRequest,
+    ChatResponse,
+    ConversationDetailOut,
+    ConversationOut,
+    MessageOut,
+)
 from app.tenancy.context import TenantContext
 from app.tenancy.dependencies import get_tenant_context
 
@@ -43,7 +50,9 @@ async def chat(
     context = await get_context_messages(session, redis, tenant_ctx, conversation.id)
 
     await save_message(session, tenant_ctx, conversation.id, role="user", content=payload.message)
-    await short_term.append_message(redis, tenant_ctx.tenant_id, conversation.id, "user", payload.message)
+    await short_term.append_message(
+        redis, tenant_ctx.tenant_id, conversation.id, "user", payload.message
+    )
 
     provider = model_router.get_provider()
     rag_message, citations = await build_rag_context(session, tenant_ctx, provider, payload.message)
@@ -51,7 +60,9 @@ async def chat(
     model_messages = context + [ModelMessage(role="user", content=payload.message)]
     if rag_message is not None:
         model_messages = [rag_message] + model_messages
-    response = await provider.generate(model_messages)
+
+    with MODEL_REQUEST_DURATION.labels(provider=provider.name, operation="generate").time():
+        response = await provider.generate(model_messages)
 
     assistant_message = await save_message(
         session, tenant_ctx, conversation.id, role="assistant", content=response.content
@@ -66,6 +77,12 @@ async def chat(
         conversation_id=conversation.id,
         model=response.model,
         usage=response.usage,
+    )
+    TOKEN_USAGE.labels(model=response.model, token_type="prompt").inc(
+        response.usage.get("prompt_tokens", 0)
+    )
+    TOKEN_USAGE.labels(model=response.model, token_type="completion").inc(
+        response.usage.get("completion_tokens", 0)
     )
 
     logger.info(
@@ -97,20 +114,33 @@ async def chat_stream(
     async def event_stream():
         async with AsyncSessionLocal() as session:
             try:
-                conversation = await get_or_create_conversation(session, tenant_ctx, payload.conversation_id)
+                conversation = await get_or_create_conversation(
+                    session, tenant_ctx, payload.conversation_id
+                )
                 context = await get_context_messages(session, redis, tenant_ctx, conversation.id)
 
-                await save_message(session, tenant_ctx, conversation.id, role="user", content=payload.message)
+                await save_message(
+                    session, tenant_ctx, conversation.id, role="user", content=payload.message
+                )
                 await short_term.append_message(
                     redis, tenant_ctx.tenant_id, conversation.id, "user", payload.message
                 )
 
-                yield f"data: {json.dumps({'type': 'conversation', 'conversation_id': str(conversation.id)})}\n\n"
+                conversation_payload = {
+                    "type": "conversation",
+                    "conversation_id": str(conversation.id),
+                }
+                yield f"data: {json.dumps(conversation_payload)}\n\n"
 
                 provider = model_router.get_provider()
-                rag_message, citations = await build_rag_context(session, tenant_ctx, provider, payload.message)
+                rag_message, citations = await build_rag_context(
+                    session, tenant_ctx, provider, payload.message
+                )
                 if citations:
-                    citations_payload = {"type": "citations", "citations": [c.model_dump(mode="json") for c in citations]}
+                    citations_payload = {
+                        "type": "citations",
+                        "citations": [c.model_dump(mode="json") for c in citations],
+                    }
                     yield f"data: {json.dumps(citations_payload)}\n\n"
 
                 model_messages = context + [ModelMessage(role="user", content=payload.message)]
@@ -118,9 +148,12 @@ async def chat_stream(
                     model_messages = [rag_message] + model_messages
 
                 full_content = ""
-                async for delta in provider.stream(model_messages):
-                    full_content += delta
-                    yield f"data: {json.dumps({'type': 'chunk', 'delta': delta})}\n\n"
+                with MODEL_REQUEST_DURATION.labels(
+                    provider=provider.name, operation="stream"
+                ).time():
+                    async for delta in provider.stream(model_messages):
+                        full_content += delta
+                        yield f"data: {json.dumps({'type': 'chunk', 'delta': delta})}\n\n"
                 full_content = full_content.strip()
 
                 assistant_message = await save_message(
@@ -134,7 +167,12 @@ async def chat_stream(
                 # non-streaming /chat is the accurate source for usage in Phase 1.
                 await session.commit()
 
-                yield f"data: {json.dumps({'type': 'done', 'message_id': str(assistant_message.id), 'model': provider.name})}\n\n"
+                done_payload = {
+                    "type": "done",
+                    "message_id": str(assistant_message.id),
+                    "model": provider.name,
+                }
+                yield f"data: {json.dumps(done_payload)}\n\n"
             except Exception:
                 await session.rollback()
                 logger.exception("chat_stream_failed", tenant_id=str(tenant_ctx.tenant_id))

@@ -33,8 +33,9 @@ class EmbeddingVector(TypeDecorator):
 
     class comparator_factory(TypeDecorator.Comparator):
         """TypeDecorator doesn't inherit the impl's custom comparator methods automatically, so
-        pgvector's distance operators are re-declared here (same operators pgvector.sqlalchemy.Vector
-        itself uses). Only meaningful when the underlying column is a real Postgres `vector` column."""
+        pgvector's distance operators are re-declared here (same operators
+        pgvector.sqlalchemy.Vector itself uses). Only meaningful when the underlying column is a
+        real Postgres `vector` column."""
 
         def cosine_distance(self, other):
             return self.op("<=>", return_type=Float)(other)

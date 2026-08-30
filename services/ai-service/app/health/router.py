@@ -30,4 +30,6 @@ async def readiness(
 
     redis_ok = await redis_health_check(redis)
 
-    return ReadinessResponse(status="ok" if db_ok and redis_ok else "degraded", database=db_ok, redis=redis_ok)
+    return ReadinessResponse(
+        status="ok" if db_ok and redis_ok else "degraded", database=db_ok, redis=redis_ok
+    )

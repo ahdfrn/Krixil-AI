@@ -5,7 +5,8 @@ from sqlalchemy.types import CHAR, TypeDecorator
 
 
 class GUID(TypeDecorator):
-    """Platform-independent UUID: native UUID on Postgres, CHAR(36) elsewhere (SQLite, used in tests)."""
+    """Platform-independent UUID: native UUID on Postgres, CHAR(36) elsewhere (SQLite, used in
+    tests)."""
 
     impl = CHAR
     cache_ok = True

@@ -4,7 +4,12 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.runner import run_agent
-from app.agents.service import create_agent_run, get_agent_run_or_404, list_agent_runs, list_agent_steps
+from app.agents.service import (
+    create_agent_run,
+    get_agent_run_or_404,
+    list_agent_runs,
+    list_agent_steps,
+)
 from app.ai.router import ModelRouter
 from app.db.session import get_session
 from app.schemas.agent import AgentRunDetailOut, AgentRunOut, AgentRunRequest, AgentStepOut

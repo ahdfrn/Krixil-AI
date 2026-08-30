@@ -1,0 +1,100 @@
+{
+  "title": "Krixil AI - Overview",
+  "uid": "krixil-overview",
+  "timezone": "browser",
+  "refresh": "10s",
+  "time": { "from": "now-1h", "to": "now" },
+  "schemaVersion": 39,
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "HTTP request rate",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [
+        { "expr": "sum(rate(http_requests_total[1m])) by (handler, status)", "legendFormat": "{{handler}} [{{status}}]" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "HTTP request duration (p95)",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le, handler))",
+          "legendFormat": "{{handler}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Error rate (5xx)",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "targets": [
+        {
+          "expr": "sum(rate(http_requests_total{status=~\"5..\"}[5m])) / sum(rate(http_requests_total[5m]))",
+          "legendFormat": "error rate"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Model call duration (p95) by provider/operation",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(krixil_model_request_duration_seconds_bucket[5m])) by (le, provider, operation))",
+          "legendFormat": "{{provider}}/{{operation}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Token usage rate",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "targets": [
+        { "expr": "sum(rate(krixil_token_usage_total[5m])) by (model, token_type)", "legendFormat": "{{model}}/{{token_type}}" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Tool execution duration (p95) by tool",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(krixil_tool_execution_duration_seconds_bucket[5m])) by (le, tool_name))",
+          "legendFormat": "{{tool_name}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "RAG hybrid search duration (p95)",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 24 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(krixil_rag_search_duration_seconds_bucket[5m])) by (le))",
+          "legendFormat": "p95"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Agent steps rate by type",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 24 },
+      "targets": [
+        { "expr": "sum(rate(krixil_agent_steps_total[5m])) by (step_type)", "legendFormat": "{{step_type}}" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Short-term memory cache hit rate",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 24 },
+      "targets": [
+        {
+          "expr": "sum(rate(krixil_short_term_memory_cache_total{result=\"hit\"}[5m])) / sum(rate(krixil_short_term_memory_cache_total[5m]))",
+          "legendFormat": "hit rate"
+        }
+      ]
+    }
+  ]
+}

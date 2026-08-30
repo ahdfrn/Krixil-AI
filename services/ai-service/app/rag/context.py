@@ -26,7 +26,9 @@ async def build_rag_context(
     system_message = ModelMessage(role="system", content=_SYSTEM_PREFIX + "\n\n".join(blocks))
 
     citations = [
-        CitationOut(document_id=r.document_id, filename=r.filename, page=r.page, chunk_index=r.chunk_index)
+        CitationOut(
+            document_id=r.document_id, filename=r.filename, page=r.page, chunk_index=r.chunk_index
+        )
         for r in results
     ]
     return system_message, citations

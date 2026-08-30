@@ -62,7 +62,9 @@ async def test_tool_call_with_no_matching_keyword_returns_final_answer():
     provider = MockProvider()
     messages = [ModelMessage(role="user", content="what's the weather like today?")]
 
-    response = await provider.tool_call(messages, [KNOWLEDGE_TOOL, DOCUMENT_DELETE_TOOL, USAGE_TOOL])
+    response = await provider.tool_call(
+        messages, [KNOWLEDGE_TOOL, DOCUMENT_DELETE_TOOL, USAGE_TOOL]
+    )
 
     assert response.tool_calls == []
     assert "weather" in response.content

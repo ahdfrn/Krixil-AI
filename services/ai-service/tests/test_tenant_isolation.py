@@ -8,7 +8,9 @@ async def test_tenant_cannot_read_another_tenants_conversation(client):
     headers_a = auth_headers(tenant_a["access_token"])
     headers_b = auth_headers(tenant_b["access_token"])
 
-    chat_resp = await client.post("/api/v1/chat", json={"message": "tenant A secret"}, headers=headers_a)
+    chat_resp = await client.post(
+        "/api/v1/chat", json={"message": "tenant A secret"}, headers=headers_a
+    )
     conversation_id = chat_resp.json()["conversation_id"]
 
     # Tenant B cannot see it in their list.
@@ -21,7 +23,9 @@ async def test_tenant_cannot_read_another_tenants_conversation(client):
 
     # Tenant B cannot hijack it via the chat endpoint.
     hijack_resp = await client.post(
-        "/api/v1/chat", json={"message": "hijack", "conversation_id": conversation_id}, headers=headers_b
+        "/api/v1/chat",
+        json={"message": "hijack", "conversation_id": conversation_id},
+        headers=headers_b,
     )
     assert hijack_resp.status_code == 404
 

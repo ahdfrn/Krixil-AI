@@ -42,8 +42,12 @@ class ModelProvider(ABC):
     @abstractmethod
     async def generate(self, messages: list[ModelMessage], **kwargs) -> ModelResponse: ...
 
+    # Deliberately `def`, not `async def`: concrete implementations are async generators (they
+    # `yield`), which mypy only type-checks correctly against an abstract method declared this
+    # way — an `async def` stub here would type as a coroutine *returning* an AsyncIterator
+    # instead of *being* one. See mypy docs: more_types.html#asynchronous-iterators.
     @abstractmethod
-    async def stream(self, messages: list[ModelMessage], **kwargs) -> AsyncIterator[str]: ...
+    def stream(self, messages: list[ModelMessage], **kwargs) -> AsyncIterator[str]: ...
 
     @abstractmethod
     async def embeddings(self, texts: list[str]) -> list[list[float]]: ...

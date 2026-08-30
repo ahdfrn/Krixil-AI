@@ -8,6 +8,8 @@ from app.ai.base import ModelProvider
 from app.core.config import get_settings
 from app.models.document import Document
 from app.models.document_chunk import DocumentChunk
+from app.observability.metrics import RAG_SEARCH_DURATION
+from app.observability.tracing import get_tracer
 from app.tenancy.context import TenantContext
 
 # Standard RRF constant (dampens the influence of very-high ranks) — this is the same default
@@ -56,22 +58,32 @@ async def _vector_search(
     query = query.order_by(DocumentChunk.embedding.cosine_distance(query_embedding)).limit(limit)
 
     result = await session.execute(query)
-    return [(chunk_id, rank) for rank, chunk_id in enumerate((row[0] for row in result.all()), start=1)]
+    return [
+        (chunk_id, rank) for rank, chunk_id in enumerate((row[0] for row in result.all()), start=1)
+    ]
 
 
 async def _keyword_search(
-    session: AsyncSession, tenant_id: uuid.UUID, query_text: str, limit: int, document_id: uuid.UUID | None
+    session: AsyncSession,
+    tenant_id: uuid.UUID,
+    query_text: str,
+    limit: int,
+    document_id: uuid.UUID | None,
 ) -> RankedList:
     tsvector = func.to_tsvector("english", DocumentChunk.content)
     tsquery = func.plainto_tsquery("english", query_text)
 
-    query = select(DocumentChunk.id).where(DocumentChunk.tenant_id == tenant_id, tsvector.op("@@")(tsquery))
+    query = select(DocumentChunk.id).where(
+        DocumentChunk.tenant_id == tenant_id, tsvector.op("@@")(tsquery)
+    )
     if document_id is not None:
         query = query.where(DocumentChunk.document_id == document_id)
     query = query.order_by(func.ts_rank(tsvector, tsquery).desc()).limit(limit)
 
     result = await session.execute(query)
-    return [(chunk_id, rank) for rank, chunk_id in enumerate((row[0] for row in result.all()), start=1)]
+    return [
+        (chunk_id, rank) for rank, chunk_id in enumerate((row[0] for row in result.all()), start=1)
+    ]
 
 
 def _reciprocal_rank_fusion(*ranked_lists: RankedList, top_k: int) -> list[tuple[uuid.UUID, float]]:
@@ -100,6 +112,20 @@ async def hybrid_search(
     if not await _tenant_has_chunks(session, tenant_ctx.tenant_id, document_id):
         return []
 
+    with RAG_SEARCH_DURATION.time(), get_tracer().start_as_current_span("rag.retrieval"):
+        return await _do_hybrid_search(
+            session, tenant_ctx, provider, query_text, top_k, document_id
+        )
+
+
+async def _do_hybrid_search(
+    session: AsyncSession,
+    tenant_ctx: TenantContext,
+    provider: ModelProvider,
+    query_text: str,
+    top_k: int,
+    document_id: uuid.UUID | None,
+) -> list[SearchResult]:
     query_embedding = (await provider.embeddings([query_text]))[0]
     fetch_limit = top_k * 4
 

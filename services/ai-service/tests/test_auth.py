@@ -17,7 +17,11 @@ async def test_login_with_correct_credentials_succeeds(client):
 
     resp = await client.post(
         "/api/v1/auth/login",
-        json={"tenant_slug": tenant_slug, "email": "owner@acme.dev", "password": "correct-horse-battery"},
+        json={
+            "tenant_slug": tenant_slug,
+            "email": "owner@acme.dev",
+            "password": "correct-horse-battery",
+        },
     )
 
     assert resp.status_code == 200
@@ -41,7 +45,11 @@ async def test_login_with_unknown_tenant_is_rejected(client):
 
     resp = await client.post(
         "/api/v1/auth/login",
-        json={"tenant_slug": "does-not-exist", "email": "owner@acme.dev", "password": "correct-horse-battery"},
+        json={
+            "tenant_slug": "does-not-exist",
+            "email": "owner@acme.dev",
+            "password": "correct-horse-battery",
+        },
     )
 
     assert resp.status_code == 401

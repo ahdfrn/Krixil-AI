@@ -10,7 +10,8 @@ from app.storage.base import ObjectStorage
 
 class MinioObjectStorage(ObjectStorage):
     """minio-py is a synchronous client; every call goes through run_in_threadpool so it never
-    blocks the asyncio event loop (the same pattern FastAPI's own docs recommend for blocking I/O)."""
+    blocks the asyncio event loop (the same pattern FastAPI's own docs recommend for blocking
+    I/O)."""
 
     def __init__(self, settings: Settings):
         self._bucket = settings.minio_bucket
@@ -18,7 +19,8 @@ class MinioObjectStorage(ObjectStorage):
             settings.minio_endpoint,
             access_key=settings.minio_access_key,
             secret_key=settings.minio_secret_key,
-            secure=False,  # local/dev MinIO is plain HTTP; front it with TLS in production via a proxy
+            # local/dev MinIO is plain HTTP; front it with TLS in production via a proxy
+            secure=False,
         )
 
     async def ensure_bucket(self) -> None:
@@ -32,7 +34,9 @@ class MinioObjectStorage(ObjectStorage):
         await run_in_threadpool(self._upload_sync, key, data, content_type)
 
     def _upload_sync(self, key: str, data: bytes, content_type: str) -> None:
-        self._client.put_object(self._bucket, key, io.BytesIO(data), length=len(data), content_type=content_type)
+        self._client.put_object(
+            self._bucket, key, io.BytesIO(data), length=len(data), content_type=content_type
+        )
 
     async def get(self, key: str) -> bytes:
         return await run_in_threadpool(self._get_sync, key)

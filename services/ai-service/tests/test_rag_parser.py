@@ -30,12 +30,12 @@ def test_parse_document_rejects_unsupported_extension():
 
 
 def test_parse_txt_returns_single_page_with_none_page_number():
-    pages = parse_document("notes.txt", "hello world".encode())
+    pages = parse_document("notes.txt", b"hello world")
     assert pages == [(None, "hello world")]
 
 
 def test_parse_csv_returns_single_page_with_none_page_number():
-    pages = parse_document("data.csv", "a,b\n1,2".encode())
+    pages = parse_document("data.csv", b"a,b\n1,2")
     assert pages == [(None, "a,b\n1,2")]
 
 

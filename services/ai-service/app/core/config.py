@@ -37,7 +37,8 @@ class Settings(BaseSettings):
     model_provider: str = "mock"
     openai_api_key: str = ""
     # OpenAI-compatible: works against api.openai.com or any compatible endpoint (self-hosted
-    # vLLM, OpenRouter, etc.) by overriding base_url — the provider code has no vendor-specific logic.
+    # vLLM, OpenRouter, etc.) by overriding base_url — the provider code has no vendor-specific
+    # logic.
     openai_base_url: str = "https://api.openai.com/v1"
     openai_model: str = "gpt-4o-mini"
     openai_embedding_model: str = "text-embedding-3-small"
@@ -62,6 +63,11 @@ class Settings(BaseSettings):
     agent_max_steps: int = 8
     agent_max_tool_calls: int = 5
     agent_max_execution_seconds: int = 120
+
+    # Tracing is opt-out (not opt-in): if no collector is reachable at otel_exporter_endpoint,
+    # spans just fail to export in the background — harmless, and never blocks a request.
+    otel_enabled: bool = True
+    otel_exporter_endpoint: str = "http://localhost:4318/v1/traces"
 
     @property
     def sqlalchemy_database_url(self) -> str:

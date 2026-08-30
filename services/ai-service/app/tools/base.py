@@ -1,6 +1,7 @@
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from enum import Enum
+from typing import Any
 
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,7 +20,12 @@ class RiskLevel(str, Enum):
 # not a per-tool choice, so it isn't a field on Tool itself.
 APPROVAL_REQUIRED_LEVELS = {RiskLevel.HIGH, RiskLevel.CRITICAL}
 
-ToolHandler = Callable[[AsyncSession, TenantContext, BaseModel], Awaitable[dict]]
+# The third parameter is really "an instance of this Tool's own input_model" — each registered
+# handler is typed with its specific pydantic subclass, which Python's Callable can't express
+# contravariantly without generics. Typed Any here rather than BaseModel so those concrete
+# handler signatures type-check; the actual guarantee is enforced at runtime, not statically —
+# request_tool_execution() always validates via tool.input_model before calling tool.handler.
+ToolHandler = Callable[[AsyncSession, TenantContext, Any], Awaitable[dict]]
 
 
 @dataclass(frozen=True)

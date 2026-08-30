@@ -6,7 +6,13 @@ async def test_upload_txt_document_creates_ready_document(client):
     registered = await register(client)
     headers = auth_headers(registered["access_token"])
 
-    files = {"file": ("notes.txt", b"Krixil AI is a self-hosted, multi-tenant AI platform.", "text/plain")}
+    files = {
+        "file": (
+            "notes.txt",
+            b"Krixil AI is a self-hosted, multi-tenant AI platform.",
+            "text/plain",
+        )
+    }
     resp = await client.post("/api/v1/documents", files=files, headers=headers)
 
     assert resp.status_code == 201

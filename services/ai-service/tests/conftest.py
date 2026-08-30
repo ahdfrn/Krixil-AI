@@ -1,3 +1,10 @@
+import os
+
+# Must be set before `from app.main import app` below — tracing is configured at import time.
+# No collector is running in the offline suite; leaving it on just adds a background export
+# thread that logs harmless-but-noisy connection errors as the test process exits.
+os.environ.setdefault("OTEL_ENABLED", "false")
+
 import fakeredis.aioredis
 import pytest
 from httpx import ASGITransport, AsyncClient

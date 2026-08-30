@@ -1,6 +1,6 @@
 import json
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -10,6 +10,7 @@ from app.ai.base import ModelMessage, ModelProvider, ToolSchema
 from app.core.logging import get_logger
 from app.models.agent_run import AgentRun
 from app.models.agent_step import AgentStep
+from app.observability.metrics import AGENT_STEPS
 from app.tenancy.context import TenantContext
 from app.tools.base import list_tools
 from app.tools.service import request_tool_execution
@@ -19,7 +20,9 @@ logger = get_logger(__name__)
 
 def _tool_schemas() -> list[ToolSchema]:
     return [
-        ToolSchema(name=t.name, description=t.description, parameters=t.input_model.model_json_schema())
+        ToolSchema(
+            name=t.name, description=t.description, parameters=t.input_model.model_json_schema()
+        )
         for t in list_tools()
     ]
 
@@ -43,6 +46,7 @@ async def _record_step(
             content=content,
         )
     )
+    AGENT_STEPS.labels(step_type=step_type).inc()
     await session.flush()
 
 
@@ -74,7 +78,11 @@ async def run_agent(
             agent_run.status = "completed"
             agent_run.step_count = step_number
             await _record_step(
-                session, agent_run, step_number, "final_response", content={"content": response.content}
+                session,
+                agent_run,
+                step_number,
+                "final_response",
+                content={"content": response.content},
             )
             break
 
@@ -86,7 +94,12 @@ async def run_agent(
             break
 
         await _record_step(
-            session, agent_run, step_number, "tool_call", tool_name=call.name, content={"arguments": call.arguments}
+            session,
+            agent_run,
+            step_number,
+            "tool_call",
+            tool_name=call.name,
+            content={"arguments": call.arguments},
         )
 
         try:
@@ -98,10 +111,17 @@ async def run_agent(
             # tool failure would.
             observation = {"error": str(exc.detail)}
             await _record_step(
-                session, agent_run, step_number, "observation", tool_name=call.name, content=observation
+                session,
+                agent_run,
+                step_number,
+                "observation",
+                tool_name=call.name,
+                content=observation,
             )
             messages.append(ModelMessage(role="assistant", content=f"Called tool {call.name}."))
-            messages.append(ModelMessage(role="user", content=f"Tool call failed: {json.dumps(observation)}"))
+            messages.append(
+                ModelMessage(role="user", content=f"Tool call failed: {json.dumps(observation)}")
+            )
             agent_run.step_count = step_number
             continue
 
@@ -119,17 +139,24 @@ async def run_agent(
             )
             break
 
-        observation = execution.output if execution.status == "completed" else {"error": execution.error_message}
-        await _record_step(session, agent_run, step_number, "observation", tool_name=call.name, content=observation)
+        if execution.status == "completed" and execution.output is not None:
+            observation = execution.output
+        else:
+            observation = {"error": execution.error_message or "unknown error"}
+        await _record_step(
+            session, agent_run, step_number, "observation", tool_name=call.name, content=observation
+        )
 
         messages.append(ModelMessage(role="assistant", content=f"Called tool {call.name}."))
-        messages.append(ModelMessage(role="user", content=f"Tool result: {json.dumps(observation)}"))
+        messages.append(
+            ModelMessage(role="user", content=f"Tool result: {json.dumps(observation)}")
+        )
         agent_run.step_count = step_number
     else:
         agent_run.status = "stopped"
         agent_run.error_message = "max_steps exceeded"
 
-    agent_run.completed_at = datetime.now(timezone.utc)
+    agent_run.completed_at = datetime.now(UTC)
     logger.info(
         "agent_run_finished",
         tenant_id=str(tenant_ctx.tenant_id),

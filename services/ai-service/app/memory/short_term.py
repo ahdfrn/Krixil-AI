@@ -16,7 +16,9 @@ async def get_recent_messages(
 ) -> list[ModelMessage] | None:
     """Returns the cached recent window, or None on a cache miss — callers fall back to
     Postgres (the durable source of truth) and should repopulate the cache via replace()."""
-    raw = await redis.lrange(_key(tenant_id, conversation_id), 0, -1)
+    # redis-py's stubs type lrange's return as a union covering its (unused here) pipeline mode,
+    # which isn't awaitable — mypy can't see that this call site always gets the plain coroutine.
+    raw = await redis.lrange(_key(tenant_id, conversation_id), 0, -1)  # type: ignore[misc]
     if not raw:
         return None
     return [ModelMessage(**json.loads(item)) for item in raw]

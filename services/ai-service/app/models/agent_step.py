@@ -1,6 +1,6 @@
 import uuid
 
-from sqlalchemy import ForeignKey, Index, Integer, JSON, String
+from sqlalchemy import JSON, ForeignKey, Index, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base, TimestampMixin, UUIDPKMixin
@@ -9,7 +9,9 @@ from app.db.types import GUID
 
 class AgentStep(UUIDPKMixin, TimestampMixin, Base):
     __tablename__ = "agent_steps"
-    __table_args__ = (Index("ix_agent_steps_agent_run_id_step_number", "agent_run_id", "step_number"),)
+    __table_args__ = (
+        Index("ix_agent_steps_agent_run_id_step_number", "agent_run_id", "step_number"),
+    )
 
     tenant_id: Mapped[uuid.UUID] = mapped_column(
         GUID(), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False

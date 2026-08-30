@@ -30,7 +30,9 @@ def _slugify(name: str) -> str:
 
 
 @router.post("/register", response_model=TokenResponse, status_code=status.HTTP_201_CREATED)
-async def register(payload: RegisterRequest, session: AsyncSession = Depends(get_session)) -> TokenResponse:
+async def register(
+    payload: RegisterRequest, session: AsyncSession = Depends(get_session)
+) -> TokenResponse:
     tenant = Tenant(name=payload.tenant_name, slug=_slugify(payload.tenant_name))
     session.add(tenant)
     await session.flush()
@@ -49,9 +51,11 @@ async def register(payload: RegisterRequest, session: AsyncSession = Depends(get
 
     try:
         await session.flush()
-    except IntegrityError:
+    except IntegrityError as exc:
         await session.rollback()
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Registration conflict, please retry")
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="Registration conflict, please retry"
+        ) from exc
 
     await record_audit_log(
         session,
@@ -80,7 +84,9 @@ async def register(payload: RegisterRequest, session: AsyncSession = Depends(get
 
 
 @router.post("/login", response_model=TokenResponse)
-async def login(payload: LoginRequest, session: AsyncSession = Depends(get_session)) -> TokenResponse:
+async def login(
+    payload: LoginRequest, session: AsyncSession = Depends(get_session)
+) -> TokenResponse:
     invalid_credentials = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid tenant, email, or password"
     )
@@ -96,7 +102,11 @@ async def login(payload: LoginRequest, session: AsyncSession = Depends(get_sessi
             select(User).where(User.tenant_id == tenant.id, User.email == payload.email.lower())
         )
     ).scalar_one_or_none()
-    if user is None or not user.is_active or not verify_password(payload.password, user.password_hash):
+    if (
+        user is None
+        or not user.is_active
+        or not verify_password(payload.password, user.password_hash)
+    ):
         raise invalid_credentials
 
     role = await session.get(Role, user.role_id)

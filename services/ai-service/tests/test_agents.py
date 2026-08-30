@@ -6,7 +6,9 @@ async def test_agent_completes_without_calling_a_tool(client):
     registered = await register(client)
     headers = auth_headers(registered["access_token"])
 
-    resp = await client.post("/api/v1/agents/run", json={"goal": "what's the weather like today?"}, headers=headers)
+    resp = await client.post(
+        "/api/v1/agents/run", json={"goal": "what's the weather like today?"}, headers=headers
+    )
 
     assert resp.status_code == 200
     body = resp.json()
@@ -104,7 +106,9 @@ async def test_approving_agents_pending_tool_actually_executes_it(client):
     )
     execution_id = run_resp.json()["pending_execution_id"]
 
-    approve_resp = await client.post(f"/api/v1/tools/executions/{execution_id}/approve", headers=headers)
+    approve_resp = await client.post(
+        f"/api/v1/tools/executions/{execution_id}/approve", headers=headers
+    )
     assert approve_resp.status_code == 200
     assert approve_resp.json()["output"]["deleted"] is True
 
@@ -127,7 +131,11 @@ async def test_agent_handles_a_failed_tool_call_without_crashing(client):
     status_resp = await client.get(f"/api/v1/agents/{resp.json()['id']}/status", headers=headers)
     steps = status_resp.json()["steps"]
     error_observations = [
-        s for s in steps if s["type"] == "observation" and s["tool_name"] == "document.delete" and "error" in s["content"]
+        s
+        for s in steps
+        if s["type"] == "observation"
+        and s["tool_name"] == "document.delete"
+        and "error" in s["content"]
     ]
     assert len(error_observations) == 1
 

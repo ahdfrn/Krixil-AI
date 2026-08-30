@@ -25,8 +25,8 @@ async def get_current_user(
 
     try:
         payload = decode_access_token(token)
-    except JWTError:
-        raise credentials_error
+    except JWTError as exc:
+        raise credentials_error from exc
 
     user = await session.get(User, payload.user_id)
 

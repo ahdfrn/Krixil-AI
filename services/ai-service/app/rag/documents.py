@@ -23,7 +23,9 @@ async def get_document_or_404(
 ) -> Document:
     document = (
         await session.execute(
-            select(Document).where(Document.id == document_id, Document.tenant_id == tenant_ctx.tenant_id)
+            select(Document).where(
+                Document.id == document_id, Document.tenant_id == tenant_ctx.tenant_id
+            )
         )
     ).scalar_one_or_none()
     if document is None:

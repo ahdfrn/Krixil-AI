@@ -33,9 +33,8 @@ def parse_document(filename: str, content: bytes) -> list[tuple[int | None, str]
     extension = extension_of(filename)
 
     if extension not in ALLOWED_EXTENSIONS:
-        raise UnsupportedFileType(
-            f"Unsupported file type '.{extension}' — allowed: {', '.join(sorted(ALLOWED_EXTENSIONS))}"
-        )
+        allowed = ", ".join(sorted(ALLOWED_EXTENSIONS))
+        raise UnsupportedFileType(f"Unsupported file type '.{extension}' — allowed: {allowed}")
 
     if extension == "pdf":
         return _parse_pdf(content)
@@ -46,7 +45,7 @@ def parse_document(filename: str, content: bytes) -> list[tuple[int | None, str]
     return [(None, content.decode("utf-8", errors="replace"))]
 
 
-def _parse_pdf(content: bytes) -> list[tuple[int, str]]:
+def _parse_pdf(content: bytes) -> list[tuple[int | None, str]]:
     reader = PdfReader(io.BytesIO(content))
     return [(i + 1, page.extract_text() or "") for i, page in enumerate(reader.pages)]
 

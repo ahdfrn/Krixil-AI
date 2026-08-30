@@ -19,7 +19,9 @@ def chunk_text(text: str, chunk_size: int, overlap: int) -> list[str]:
 
     step = chunk_size - overlap
     if step <= 0:
-        raise ValueError(f"chunk_overlap ({overlap}) must be smaller than chunk_size ({chunk_size})")
+        raise ValueError(
+            f"chunk_overlap ({overlap}) must be smaller than chunk_size ({chunk_size})"
+        )
     chunks = []
     start = 0
     while start < len(text):

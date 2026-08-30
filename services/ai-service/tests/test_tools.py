@@ -19,7 +19,9 @@ async def test_low_risk_tool_executes_immediately(client):
     registered = await register(client)
     headers = auth_headers(registered["access_token"])
 
-    resp = await client.post("/api/v1/tools/usage.get_summary/execute", json={"days": 7}, headers=headers)
+    resp = await client.post(
+        "/api/v1/tools/usage.get_summary/execute", json={"days": 7}, headers=headers
+    )
 
     assert resp.status_code == 200
     body = resp.json()
@@ -80,7 +82,9 @@ async def test_approving_a_pending_execution_runs_the_tool(client):
     )
     execution_id = execute_resp.json()["id"]
 
-    approve_resp = await client.post(f"/api/v1/tools/executions/{execution_id}/approve", headers=headers)
+    approve_resp = await client.post(
+        f"/api/v1/tools/executions/{execution_id}/approve", headers=headers
+    )
 
     assert approve_resp.status_code == 200
     body = approve_resp.json()
@@ -121,10 +125,14 @@ async def test_approving_already_resolved_execution_returns_409(client):
     registered = await register(client)
     headers = auth_headers(registered["access_token"])
 
-    resp = await client.post("/api/v1/tools/usage.get_summary/execute", json={"days": 7}, headers=headers)
+    resp = await client.post(
+        "/api/v1/tools/usage.get_summary/execute", json={"days": 7}, headers=headers
+    )
     execution_id = resp.json()["id"]
 
-    approve_resp = await client.post(f"/api/v1/tools/executions/{execution_id}/approve", headers=headers)
+    approve_resp = await client.post(
+        f"/api/v1/tools/executions/{execution_id}/approve", headers=headers
+    )
     assert approve_resp.status_code == 409
 
 
@@ -134,7 +142,9 @@ async def test_execution_list_and_get_are_tenant_scoped(client):
     headers_a = auth_headers(tenant_a["access_token"])
     headers_b = auth_headers(tenant_b["access_token"])
 
-    resp = await client.post("/api/v1/tools/usage.get_summary/execute", json={"days": 7}, headers=headers_a)
+    resp = await client.post(
+        "/api/v1/tools/usage.get_summary/execute", json={"days": 7}, headers=headers_a
+    )
     execution_id = resp.json()["id"]
 
     list_b = await client.get("/api/v1/tools/executions", headers=headers_b)
@@ -155,5 +165,7 @@ async def test_missing_permission_returns_403(client, session_factory):
         role.permissions = ["something:unrelated"]
         await session.commit()
 
-    resp = await client.post("/api/v1/tools/usage.get_summary/execute", json={"days": 7}, headers=headers)
+    resp = await client.post(
+        "/api/v1/tools/usage.get_summary/execute", json={"days": 7}, headers=headers
+    )
     assert resp.status_code == 403

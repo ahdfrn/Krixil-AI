@@ -38,7 +38,9 @@ class CloudModelProvider(ModelProvider):
         response.raise_for_status()
         data = response.json()
         content = data["choices"][0]["message"]["content"]
-        return ModelResponse(content=content, model=data.get("model", self._model), usage=data.get("usage", {}))
+        return ModelResponse(
+            content=content, model=data.get("model", self._model), usage=data.get("usage", {})
+        )
 
     async def stream(self, messages: list[ModelMessage], **kwargs) -> AsyncIterator[str]:
         payload = {
@@ -52,7 +54,7 @@ class CloudModelProvider(ModelProvider):
             async for line in response.aiter_lines():
                 if not line.startswith("data: "):
                     continue
-                data = line[len("data: "):]
+                data = line[len("data: ") :]
                 if data == "[DONE]":
                     break
                 chunk = json.loads(data)
@@ -78,7 +80,11 @@ class CloudModelProvider(ModelProvider):
             "tools": [
                 {
                     "type": "function",
-                    "function": {"name": t.name, "description": t.description, "parameters": t.parameters},
+                    "function": {
+                        "name": t.name,
+                        "description": t.description,
+                        "parameters": t.parameters,
+                    },
                 }
                 for t in tools
             ],
@@ -90,7 +96,9 @@ class CloudModelProvider(ModelProvider):
         message = data["choices"][0]["message"]
 
         tool_calls = [
-            ToolCallRequest(name=tc["function"]["name"], arguments=json.loads(tc["function"]["arguments"]))
+            ToolCallRequest(
+                name=tc["function"]["name"], arguments=json.loads(tc["function"]["arguments"])
+            )
             for tc in (message.get("tool_calls") or [])
         ]
         return ModelResponse(

@@ -1,6 +1,7 @@
 import asyncio
+import time
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from fastapi import HTTPException, status
 from pydantic import ValidationError
@@ -10,6 +11,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.audit import record_audit_log
 from app.core.logging import get_logger
 from app.models.tool_execution import ToolExecution
+from app.observability.metrics import TOOL_EXECUTION_DURATION
+from app.observability.tracing import get_tracer
 from app.tenancy.context import TenantContext
 from app.tools.base import APPROVAL_REQUIRED_LEVELS, Tool, get_tool
 
@@ -19,7 +22,9 @@ logger = get_logger(__name__)
 def _get_tool_or_404(tool_name: str) -> Tool:
     tool = get_tool(tool_name)
     if tool is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Unknown tool '{tool_name}'")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=f"Unknown tool '{tool_name}'"
+        )
     return tool
 
 
@@ -39,7 +44,9 @@ async def request_tool_execution(
     try:
         validated_input = tool.input_model.model_validate(raw_input)
     except ValidationError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=exc.errors())
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=exc.errors()
+        ) from exc
 
     requires_approval = tool.risk_level in APPROVAL_REQUIRED_LEVELS
     execution = ToolExecution(
@@ -74,22 +81,33 @@ async def request_tool_execution(
     return execution
 
 
-async def _run(session, tenant_ctx: TenantContext, tool: Tool, execution: ToolExecution, validated_input) -> None:
-    try:
-        output = await asyncio.wait_for(
-            tool.handler(session, tenant_ctx, validated_input), timeout=tool.timeout_seconds
-        )
-        execution.output = output
-        execution.status = "completed"
-    except TimeoutError:
-        execution.status = "failed"
-        execution.error_message = f"Tool execution timed out after {tool.timeout_seconds}s"
-    except Exception as exc:
-        logger.exception("tool_execution_failed", tool_name=tool.name, execution_id=str(execution.id))
-        execution.status = "failed"
-        execution.error_message = str(exc)
+async def _run(
+    session, tenant_ctx: TenantContext, tool: Tool, execution: ToolExecution, validated_input
+) -> None:
+    start = time.monotonic()
+    with get_tracer().start_as_current_span("tool.execute") as span:
+        span.set_attribute("tool.name", tool.name)
+        span.set_attribute("tool.risk_level", tool.risk_level.value)
+        try:
+            output = await asyncio.wait_for(
+                tool.handler(session, tenant_ctx, validated_input), timeout=tool.timeout_seconds
+            )
+            execution.output = output
+            execution.status = "completed"
+        except TimeoutError:
+            execution.status = "failed"
+            execution.error_message = f"Tool execution timed out after {tool.timeout_seconds}s"
+        except Exception as exc:
+            logger.exception(
+                "tool_execution_failed", tool_name=tool.name, execution_id=str(execution.id)
+            )
+            execution.status = "failed"
+            execution.error_message = str(exc)
 
-    execution.completed_at = datetime.now(timezone.utc)
+    TOOL_EXECUTION_DURATION.labels(tool_name=tool.name, status=execution.status).observe(
+        time.monotonic() - start
+    )
+    execution.completed_at = datetime.now(UTC)
     await record_audit_log(
         session,
         tenant_id=tenant_ctx.tenant_id,
@@ -112,11 +130,15 @@ async def get_execution_or_404(
         )
     ).scalar_one_or_none()
     if execution is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tool execution not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Tool execution not found"
+        )
     return execution
 
 
-async def list_executions(session: AsyncSession, tenant_ctx: TenantContext, limit: int = 50) -> list[ToolExecution]:
+async def list_executions(
+    session: AsyncSession, tenant_ctx: TenantContext, limit: int = 50
+) -> list[ToolExecution]:
     result = await session.execute(
         select(ToolExecution)
         .where(ToolExecution.tenant_id == tenant_ctx.tenant_id)
@@ -130,7 +152,9 @@ async def approve_execution(
     session: AsyncSession, tenant_ctx: TenantContext, execution_id: uuid.UUID
 ) -> ToolExecution:
     if not tenant_ctx.has_permission("tools:approve"):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Missing 'tools:approve' permission")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Missing 'tools:approve' permission"
+        )
 
     execution = await get_execution_or_404(session, tenant_ctx, execution_id)
     if execution.status != "pending_approval":
@@ -143,7 +167,7 @@ async def approve_execution(
     validated_input = tool.input_model.model_validate(execution.input)
 
     execution.approved_by = tenant_ctx.user_id
-    execution.approved_at = datetime.now(timezone.utc)
+    execution.approved_at = datetime.now(UTC)
     execution.status = "running"
     await session.flush()
 
@@ -155,7 +179,9 @@ async def reject_execution(
     session: AsyncSession, tenant_ctx: TenantContext, execution_id: uuid.UUID, reason: str | None
 ) -> ToolExecution:
     if not tenant_ctx.has_permission("tools:approve"):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Missing 'tools:approve' permission")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Missing 'tools:approve' permission"
+        )
 
     execution = await get_execution_or_404(session, tenant_ctx, execution_id)
     if execution.status != "pending_approval":
@@ -166,7 +192,7 @@ async def reject_execution(
 
     execution.status = "rejected"
     execution.error_message = reason
-    execution.completed_at = datetime.now(timezone.utc)
+    execution.completed_at = datetime.now(UTC)
     await record_audit_log(
         session,
         tenant_id=tenant_ctx.tenant_id,

@@ -31,7 +31,9 @@ async def get_agent_run_or_404(
 ) -> AgentRun:
     agent_run = (
         await session.execute(
-            select(AgentRun).where(AgentRun.id == agent_run_id, AgentRun.tenant_id == tenant_ctx.tenant_id)
+            select(AgentRun).where(
+                AgentRun.id == agent_run_id, AgentRun.tenant_id == tenant_ctx.tenant_id
+            )
         )
     ).scalar_one_or_none()
     if agent_run is None:
@@ -50,7 +52,9 @@ async def list_agent_steps(
     return list(result.scalars().all())
 
 
-async def list_agent_runs(session: AsyncSession, tenant_ctx: TenantContext, limit: int = 50) -> list[AgentRun]:
+async def list_agent_runs(
+    session: AsyncSession, tenant_ctx: TenantContext, limit: int = 50
+) -> list[AgentRun]:
     result = await session.execute(
         select(AgentRun)
         .where(AgentRun.tenant_id == tenant_ctx.tenant_id)

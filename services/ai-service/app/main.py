@@ -2,8 +2,9 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from prometheus_fastapi_instrumentator import Instrumentator
 
-import app.tools  # noqa: F401  # registers every tool via each module's register_tool() call
+from app import tools as _tools  # noqa: F401  # side-effect import: registers every tool
 from app.agents.router import router as agents_router
 from app.ai.router import aclose_providers
 from app.auth.router import router as auth_router
@@ -12,6 +13,7 @@ from app.core.config import get_settings
 from app.core.logging import configure_logging, get_logger
 from app.health.router import router as health_router
 from app.middleware.request_context import RequestContextMiddleware
+from app.observability.tracing import configure_tracing
 from app.rag.router import router as rag_router
 from app.storage.dependency import get_storage
 from app.tools.router import router as tools_router
@@ -47,3 +49,7 @@ app.include_router(chat_router, prefix=settings.api_v1_prefix)
 app.include_router(rag_router, prefix=settings.api_v1_prefix)
 app.include_router(tools_router, prefix=settings.api_v1_prefix)
 app.include_router(agents_router, prefix=settings.api_v1_prefix)
+
+# /metrics (Prometheus scrape target) — excluded from its own request metrics.
+Instrumentator().instrument(app).expose(app, endpoint="/metrics", include_in_schema=False)
+configure_tracing(app, settings)
