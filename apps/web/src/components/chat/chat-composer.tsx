@@ -9,9 +9,13 @@ import type { ComposerAttachment } from "@/components/chat/file-attachment-chip"
 import { FileAttachmentChip, formatBytes } from "@/components/chat/file-attachment-chip";
 import { ModelSelector } from "@/components/chat/model-selector";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { ApiError } from "@/lib/api/client";
+import { uploadDocument } from "@/lib/api/documents";
 import { cn } from "@/lib/utils";
 import { useChatStore } from "@/stores/chat-store";
 import type { ModelId } from "@/types/chat";
+
+const ACCEPTED_EXTENSIONS = [".pdf", ".docx", ".txt", ".csv"];
 
 export function ChatComposer({
   onSend,
@@ -55,20 +59,33 @@ export function ChatComposer({
     const list = Array.from(files);
     for (const file of list) {
       const id = nanoid(8);
+      const ext = file.name.slice(file.name.lastIndexOf(".")).toLowerCase();
+      if (!ACCEPTED_EXTENSIONS.includes(ext)) {
+        toast.error(`"${file.name}" isn't a supported file type — allowed: pdf, docx, txt, csv.`);
+        continue;
+      }
+
       setAttachments((prev) => [
         ...prev,
         { id, name: file.name, sizeLabel: formatBytes(file.size), status: "uploading" },
       ]);
-      // Phase 1: simulated upload. Phase 2: this becomes a real POST /api/v1/documents call —
-      // see the master prompt's "Frontend hanya bertanggung jawab terhadap upload UI" note.
-      setTimeout(
-        () => {
-          setAttachments((prev) =>
-            prev.map((a) => (a.id === id ? { ...a, status: "ready" } : a)),
-          );
-        },
-        900 + Math.random() * 900,
-      );
+
+      // Uploading adds the file to your knowledge base (tenant-wide RAG search), not to this
+      // specific message — the backend has no per-message attachment concept.
+      uploadDocument(file)
+        .then((doc) => {
+          if (doc.status === "ready") {
+            setAttachments((prev) => prev.map((a) => (a.id === id ? { ...a, status: "ready" } : a)));
+            toast.success(`"${file.name}" added to your knowledge base.`);
+          } else {
+            setAttachments((prev) => prev.map((a) => (a.id === id ? { ...a, status: "error" } : a)));
+            toast.error(doc.error_message ?? `"${file.name}" couldn't be processed.`);
+          }
+        })
+        .catch((err) => {
+          setAttachments((prev) => prev.map((a) => (a.id === id ? { ...a, status: "error" } : a)));
+          toast.error(err instanceof ApiError ? err.message : `"${file.name}" failed to upload.`);
+        });
     }
   }
 
@@ -148,7 +165,7 @@ export function ChatComposer({
               type="file"
               multiple
               className="hidden"
-              accept=".pdf,.docx,.txt,.csv,.xlsx,image/*"
+              accept={ACCEPTED_EXTENSIONS.join(",")}
               onChange={(e) => {
                 if (e.target.files?.length) addFiles(e.target.files);
                 e.target.value = "";

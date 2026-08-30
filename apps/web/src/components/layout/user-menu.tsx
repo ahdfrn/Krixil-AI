@@ -3,6 +3,7 @@
 import { Keyboard, LogOut, Monitor, Moon, Settings, Sun, User } from "lucide-react";
 import { useTheme } from "next-themes";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
@@ -20,19 +21,24 @@ import {
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-
-// Phase 1: static mock user. Phase 2: comes from the authenticated session (see the master
-// prompt's Authentication section) — nothing in this component's JSX needs to change, only
-// where these two values are read from.
-const MOCK_USER = { name: "Alex Rivera", email: "alex@krixil.dev" };
+import { useAuthStore } from "@/stores/auth-store";
 
 export function UserMenu({ compact = false }: { compact?: boolean }) {
   const { theme, setTheme } = useTheme();
+  const router = useRouter();
+  const user = useAuthStore((s) => s.user);
+  const tenant = useAuthStore((s) => s.tenant);
+  const logout = useAuthStore((s) => s.logout);
 
-  const initials = MOCK_USER.name
-    .split(" ")
-    .map((p) => p[0])
-    .join("");
+  const email = user?.email ?? "";
+  const displayName = tenant ? `${email.split("@")[0]} · ${tenant.name}` : email;
+
+  const initials = email ? email[0].toUpperCase() : "?";
+
+  function handleSignOut() {
+    logout();
+    router.push("/login");
+  }
 
   return (
     <DropdownMenu>
@@ -40,7 +46,7 @@ export function UserMenu({ compact = false }: { compact?: boolean }) {
         {compact ? (
           <button
             type="button"
-            aria-label={`${MOCK_USER.name} — account menu`}
+            aria-label={`${email} — account menu`}
             className="flex size-9 items-center justify-center rounded-md hover:bg-sidebar-accent"
           >
             <Avatar className="size-6">
@@ -59,15 +65,15 @@ export function UserMenu({ compact = false }: { compact?: boolean }) {
                 {initials}
               </AvatarFallback>
             </Avatar>
-            <span className="truncate text-sm">{MOCK_USER.name}</span>
+            <span className="truncate text-sm">{displayName}</span>
           </button>
         )}
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" className="w-56">
         <DropdownMenuLabel className="font-normal">
           <div className="flex flex-col">
-            <span className="text-sm font-medium">{MOCK_USER.name}</span>
-            <span className="text-xs text-muted-foreground">{MOCK_USER.email}</span>
+            <span className="truncate text-sm font-medium">{email}</span>
+            <span className="truncate text-xs text-muted-foreground">{tenant?.name}</span>
           </div>
         </DropdownMenuLabel>
         <DropdownMenuSeparator />
@@ -109,10 +115,7 @@ export function UserMenu({ compact = false }: { compact?: boolean }) {
           <Keyboard /> Keyboard shortcuts
         </DropdownMenuItem>
         <DropdownMenuSeparator />
-        <DropdownMenuItem
-          variant="destructive"
-          onSelect={() => toast("Sign out isn't wired up yet — no auth backend in this phase.")}
-        >
+        <DropdownMenuItem variant="destructive" onSelect={handleSignOut}>
           <LogOut /> Sign out
         </DropdownMenuItem>
       </DropdownMenuContent>

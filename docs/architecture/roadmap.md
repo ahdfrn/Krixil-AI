@@ -38,9 +38,11 @@ numbers above.
   home, chat interface, composer, message rendering, dark/light theme, responsive/mobile), running
   entirely on mock data with a `lib/api/*.ts` abstraction seam so Phase 2 can swap in real calls
   without touching components. See `web-phase1.md`.
-- **Web Phase 2 — Auth, conversation/streaming API, file upload** (not started): wire `lib/api/*`
-  to the real backend above (login/register/session, `POST /api/v1/chat` + `/chat/stream`, real
-  file upload processing).
+- **Web Phase 2 — Auth, conversation/streaming API, file upload** (done): `lib/api/*` wired to the
+  real backend (register/login, real SSE `POST /chat/stream`, `GET /conversations`, real
+  `POST /documents` upload). See `web-phase2.md` for the real API contract found (narrower than
+  the spec implied in places — no refresh token, no conversation rename/delete/pin/archive
+  endpoints, no tool-call progress events) and what's deliberately deferred as a result.
 - **Web Phase 3 — Knowledge/Agents/Tools/Settings pages** (not started): replace the current
   placeholder pages with real functionality backed by the corresponding backend systems (Phases
   2–3 above).
