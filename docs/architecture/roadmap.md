@@ -24,15 +24,18 @@ Each phase must be runnable and tested before the next one starts — no phase i
   exception). Staging/production deploy automation deferred — no target infrastructure exists yet to
   deploy to; everything up to a verified, working container image is already automated. See `phase5.md`.
 
-This closes out the original backend roadmap. **Addendum (2026-08-30)**: conversation rename
-(`PATCH /conversations/{id}`) and delete (`DELETE /conversations/{id}`) added, plus a related
-tenant+user-scoping tightening on `GET /conversations/{id}` — see `phase1.md`'s addendum section.
+This closes out the original backend roadmap. **Addenda (2026-08-30)**, both in `phase1.md`:
+(1) conversation rename (`PATCH /conversations/{id}`) and delete (`DELETE /conversations/{id}`),
+plus a related tenant+user-scoping tightening on `GET /conversations/{id}`; (2) `GET /models` +
+a `model` field on `ChatRequest` — today always resolves to the one real configured provider
+(`id="auto"`), not a fabricated multi-model catalog, since `ModelRouter` has no concept of more
+than one simultaneously-available model yet.
 Later, not yet scheduled: fine-tuning (LoRA/QLoRA) pipeline, self-hosted inference via vLLM,
 Kubernetes migration, staging/production hosts (needed before Phase 5's deploy automation can be
-finished), a model-listing endpoint + per-request model selection, a second role + requester/
-approver separation for tool approvals (needs an invite/add-user endpoint first — see phase3.md),
-agent-run resume-after-approval (see phase4.md), conversation pin/archive (needs a schema
-migration).
+finished), a second real model in the catalog (needs actual access to a second distinct model/
+endpoint), a second role + requester/approver separation for tool approvals (needs an invite/
+add-user endpoint first — see phase3.md), agent-run resume-after-approval (see phase4.md),
+conversation pin/archive (needs a schema migration).
 
 ## Web app (`apps/web`) — separate phase track, own spec
 
@@ -54,8 +57,10 @@ numbers above.
   `/agents` (run a real agent goal, render the real step trace, handle `waiting_approval` honestly
   since the backend never auto-resumes a paused run), and Settings' Usage + Account tabs wired to
   real data. See `web-phase3.md` for the real API contract found and what's deliberately deferred.
-- **Web Phase 4 — Real AI backend integration hardening** (not started): memory/RAG/model-router
-  behavior surfaced properly in the UI (citations, tool-call detail views, model selector wired to
-  real model list).
+- **Web Phase 4 — Real AI backend integration hardening** (done, incrementally): all three things
+  this was originally scoped for ended up done as part of earlier work rather than as one dedicated
+  push — citations (Web Phase 2), tool-call/agent-run detail views (Web Phase 3), and the model
+  selector wired to a real list (this backend roadmap's 2026-08-30 addendum above; today that list
+  has exactly one real entry, honestly, not a fabricated multi-model catalog).
 - **Web Phase 5 — Production hardening** (not started): monitoring, security, multi-tenant UI
   concerns, scaling — mirrors the backend's own Phase 5 concerns on the frontend side.

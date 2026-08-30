@@ -65,7 +65,7 @@ export function ChatHeader({ conversation }: { conversation: Conversation }) {
       <div className="ml-auto flex items-center gap-1">
         <ModelSelector
           value={conversation.model}
-          onChange={() => toast.info("Krixil routes to a model automatically — manual selection isn't supported yet.")}
+          onChange={() => toast.info("This is Krixil's only available model right now — more will show up here as they're added.")}
           size="sm"
         />
 

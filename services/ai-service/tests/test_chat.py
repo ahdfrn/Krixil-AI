@@ -33,6 +33,38 @@ async def test_chat_happy_path_persists_conversation(client):
     assert [m["role"] for m in messages] == ["user", "assistant", "user", "assistant"]
 
 
+async def test_chat_with_explicit_valid_model_behaves_like_omitting_it(client):
+    registered = await register(client)
+    headers = auth_headers(registered["access_token"])
+
+    resp = await client.post(
+        "/api/v1/chat", json={"message": "hello", "model": "auto"}, headers=headers
+    )
+    assert resp.status_code == 200
+    assert resp.json()["model"] == "mock"
+
+
+async def test_chat_with_unknown_model_returns_400(client):
+    registered = await register(client)
+    headers = auth_headers(registered["access_token"])
+
+    resp = await client.post(
+        "/api/v1/chat", json={"message": "hello", "model": "nonsense"}, headers=headers
+    )
+    assert resp.status_code == 400
+    assert "nonsense" in resp.json()["detail"]
+
+
+async def test_chat_stream_with_unknown_model_returns_400(client):
+    registered = await register(client)
+    headers = auth_headers(registered["access_token"])
+
+    resp = await client.post(
+        "/api/v1/chat/stream", json={"message": "hello", "model": "nonsense"}, headers=headers
+    )
+    assert resp.status_code == 400
+
+
 async def test_chat_with_unknown_conversation_id_returns_404(client):
     registered = await register(client)
     headers = auth_headers(registered["access_token"])

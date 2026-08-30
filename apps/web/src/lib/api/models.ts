@@ -1,12 +1,24 @@
-import { MOCK_MODELS } from "@/lib/mock/models";
+import { apiFetch } from "@/lib/api/client";
 import type { AIModel } from "@/types/chat";
 
-/**
- * Phase 1: returns static mock data. Phase 2: becomes `fetch("/api/v1/models")`. Nothing that
- * calls listModels() needs to change — this is the seam described in the master prompt's
- * "API Abstraction" section.
- */
+interface ModelOut {
+  id: string;
+  name: string;
+  description: string;
+}
+
+// The backend has no concept of icons — that's a display-only concern. "auto" is the one real
+// model that exists today; unrecognized future ids fall back to the same icon rather than erroring.
+const ICON_BY_ID: Record<string, AIModel["icon"]> = {
+  auto: "sparkles",
+};
+
 export async function listModels(): Promise<AIModel[]> {
-  await new Promise((resolve) => setTimeout(resolve, 120));
-  return MOCK_MODELS;
+  const raw = await apiFetch<ModelOut[]>("/models");
+  return raw.map((m) => ({
+    id: m.id,
+    name: m.name,
+    description: m.description,
+    icon: ICON_BY_ID[m.id] ?? "sparkles",
+  }));
 }

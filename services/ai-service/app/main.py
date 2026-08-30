@@ -6,6 +6,7 @@ from prometheus_fastapi_instrumentator import Instrumentator
 
 from app import tools as _tools  # noqa: F401  # side-effect import: registers every tool
 from app.agents.router import router as agents_router
+from app.ai.models_router import router as models_router
 from app.ai.router import aclose_providers
 from app.auth.router import router as auth_router
 from app.chat.router import router as chat_router
@@ -49,6 +50,7 @@ app.include_router(chat_router, prefix=settings.api_v1_prefix)
 app.include_router(rag_router, prefix=settings.api_v1_prefix)
 app.include_router(tools_router, prefix=settings.api_v1_prefix)
 app.include_router(agents_router, prefix=settings.api_v1_prefix)
+app.include_router(models_router, prefix=settings.api_v1_prefix)
 
 # /metrics (Prometheus scrape target) — excluded from its own request metrics.
 Instrumentator().instrument(app).expose(app, endpoint="/metrics", include_in_schema=False)

@@ -136,7 +136,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
         if (realId) ensureInitialized(realId);
 
         try {
-          for await (const event of streamMessage({ conversationId, message: content }, abortController.signal)) {
+          for await (const event of streamMessage(
+            { conversationId, message: content, model: get().selectedModel },
+            abortController.signal,
+          )) {
             switch (event.type) {
               case "conversation": {
                 realId = event.conversation_id;

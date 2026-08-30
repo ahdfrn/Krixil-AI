@@ -7,6 +7,7 @@ from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai.base import ModelMessage
+from app.ai.catalog import validate_model_id
 from app.ai.router import ModelRouter
 from app.chat.service import (
     delete_conversation,
@@ -49,6 +50,7 @@ async def chat(
     session: AsyncSession = Depends(get_session),
     redis: Redis = Depends(get_redis),
 ) -> ChatResponse:
+    validate_model_id(payload.model)
     conversation = await get_or_create_conversation(session, tenant_ctx, payload.conversation_id)
     context = await get_context_messages(session, redis, tenant_ctx, conversation.id)
 
@@ -110,6 +112,11 @@ async def chat_stream(
     tenant_ctx: TenantContext = Depends(get_tenant_context),
     redis: Redis = Depends(get_redis),
 ) -> StreamingResponse:
+    # Validated here, outside event_stream(), so a bad model id gets a real 400 response instead
+    # of a 200-with-SSE-error-event (which is how failures inside the generator surface, since the
+    # StreamingResponse's headers are already committed by the time it starts running).
+    validate_model_id(payload.model)
+
     # Deliberately NOT using Depends(get_session) here: FastAPI tears down yield-dependencies
     # once the endpoint function returns, which for a StreamingResponse can be before the body
     # generator has actually run. The session is opened and closed entirely inside the

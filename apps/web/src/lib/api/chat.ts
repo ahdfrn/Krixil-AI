@@ -32,7 +32,7 @@ function mapCitations(raw: BackendCitation[]): Citation[] {
  * genuine `data: {...}\n\n` frames off the network instead of yielding canned text.
  */
 export async function* streamMessage(
-  { conversationId, message }: { conversationId: string | null; message: string },
+  { conversationId, message, model }: { conversationId: string | null; message: string; model?: string },
   signal: AbortSignal,
 ): AsyncGenerator<StreamEvent> {
   const token = useAuthStore.getState().accessToken;
@@ -43,7 +43,7 @@ export async function* streamMessage(
       "Content-Type": "application/json",
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
     },
-    body: JSON.stringify({ message, conversation_id: conversationId }),
+    body: JSON.stringify({ message, conversation_id: conversationId, model }),
     signal,
   });
 

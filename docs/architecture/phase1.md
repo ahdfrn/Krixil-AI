@@ -67,3 +67,38 @@ both the header and the sidebar item and confirmed it survived a reload (real ba
 local state); deleted the open conversation, confirmed navigation to `/chat`, and confirmed after a
 reload it was genuinely gone (not just removed from local state) while the untouched conversation
 remained; confirmed Pin/Archive still show their unchanged stub toast. Zero console/page errors.
+
+## Addendum (2026-08-30): real model listing + per-request model field
+
+Closes the other half of what the web app's frontend has faked since Web Phase 1: a 5-option model
+selector (Auto/Fast/Reasoning/Coding/Research) backed by nothing. The real constraint:
+`ModelRouter.get_provider()` (`app/ai/router.py`) only ever resolves **one** active provider, chosen
+once at startup by `MODEL_PROVIDER` — there's no backend concept of multiple simultaneously
+available models. Confirmed with the user: expose exactly what's real (one model) rather than
+fabricate variants, shaped so a second real model slots in later without another frontend change.
+
+Added `app/ai/catalog.py` (`get_model_catalog()` — today always one entry, `id="auto"`, with a
+`description` computed live from the active config, e.g. "Routes to gpt-4o-mini via the configured
+OpenAI-compatible endpoint" or the mock-provider equivalent; `validate_model_id()` — 400s on an
+unrecognized id, no-ops on `None`), `app/ai/models_router.py` (`GET /models`, authenticated like
+every other route here), and `model: str | None = None` on `ChatRequest`, validated at the top of
+both `/chat` and `/chat/stream` before any DB work (validated outside the SSE generator for
+`/chat/stream` specifically, so a bad model id gets a real 400 instead of a 200-with-error-event).
+`CloudModelProvider.generate`/`stream`/`tool_call` already merge `**kwargs` into the outgoing
+payload after the default `"model"` key, so passing `model=...` through already overrides it for
+free — no provider-level change needed for when a second real model exists to route to.
+
+Frontend: `lib/api/models.ts` now calls the real endpoint instead of returning mock data; the
+now-fully-dead `src/lib/mock/` directory (models/conversations/responses — the last of it was still
+referenced by the old `listModels()`) was deleted, a Phase 2 cleanup that had been missed.
+`selectedModel` (already defaulted to `"auto"`) is now actually sent in chat requests instead of
+being computed and discarded. Visible effect, not a bug: the model dropdown shrinks from 5 mock
+entries to 1 real one — the honest result of the option chosen, not a regression.
+
+Verified: `pytest` (90/90, +4 new tests: `GET /models` returns one `id="auto"` entry and requires
+auth; `POST /chat` accepts `model:"auto"` and rejects `model:"nonsense"` with 400, both streaming
+and non-streaming), `ruff`, `mypy` clean. Live: the dropdown shows exactly one real entry (not the
+old 5) in both the composer and an open conversation's header, with a description that genuinely
+reflects live config; captured the real outgoing `/chat/stream` request and confirmed
+`model:"auto"` actually rides in the body; sending a message still streams and renders correctly.
+Zero console/page errors.
