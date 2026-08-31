@@ -4,22 +4,23 @@ from collections.abc import AsyncIterator
 import httpx
 
 from app.ai.base import ModelMessage, ModelProvider, ModelResponse, ToolCallRequest, ToolSchema
-from app.core.config import Settings
 
 
 class CloudModelProvider(ModelProvider):
     """OpenAI-compatible provider over HTTP. Works against api.openai.com or any endpoint that
     speaks the same /chat/completions, /embeddings, /models shape (self-hosted vLLM, OpenRouter,
-    etc.) — nothing here is OpenAI-specific beyond the request/response shape itself."""
+    Ollama, etc.) — nothing here is OpenAI-specific beyond the request/response shape itself.
+    Takes explicit config rather than a Settings object so the same class can back more than one
+    named provider (e.g. "openai" and "ollama" in app/ai/router.py) with different config, without
+    a settings-adapter shim."""
 
-    name = "openai"
-
-    def __init__(self, settings: Settings):
-        self._model = settings.openai_model
-        self._embedding_model = settings.openai_embedding_model
+    def __init__(self, *, name: str, base_url: str, api_key: str, model: str, embedding_model: str):
+        self.name = name
+        self._model = model
+        self._embedding_model = embedding_model
         self._client = httpx.AsyncClient(
-            base_url=settings.openai_base_url,
-            headers={"Authorization": f"Bearer {settings.openai_api_key}"},
+            base_url=base_url,
+            headers={"Authorization": f"Bearer {api_key}"},
             timeout=httpx.Timeout(60.0, connect=10.0),
         )
 

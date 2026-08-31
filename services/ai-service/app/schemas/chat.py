@@ -26,11 +26,17 @@ class CitationOut(BaseModel):
     chunk_index: int
 
 
+class ToolCallOut(BaseModel):
+    tool_name: str
+    summary: str
+
+
 class ChatResponse(BaseModel):
     conversation_id: uuid.UUID
     message: MessageOut
     model: str
     citations: list[CitationOut] = []
+    tool_calls: list[ToolCallOut] = []
 
 
 class ConversationOut(BaseModel):

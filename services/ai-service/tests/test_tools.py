@@ -16,7 +16,20 @@ async def test_list_tools_returns_registered_tools(client):
     resp = await client.get("/api/v1/tools", headers=headers)
     assert resp.status_code == 200
     names = {t["name"] for t in resp.json()}
-    assert names == {"knowledge.search", "usage.get_summary", "document.delete", "web.search"}
+    assert names == {
+        "knowledge.search",
+        "usage.get_summary",
+        "document.delete",
+        "web.search",
+        "code.list_files",
+        "code.read_file",
+        "code.write_file",
+        "code.run_command",
+        "host.list_files",
+        "host.read_file",
+        "host.write_file",
+        "host.run_command",
+    }
 
 
 async def test_web_search_without_key_fails_with_clear_message(client):

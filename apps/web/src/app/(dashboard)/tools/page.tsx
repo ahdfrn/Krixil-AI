@@ -8,6 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ApiError } from "@/lib/api/client";
 import { listDocuments, type DocumentOut } from "@/lib/api/documents";
@@ -365,19 +366,18 @@ function ToolForm({
       >
         <div className="flex min-w-0 flex-1 flex-col gap-1">
           <Label htmlFor="doc-select" className="text-xs">Document</Label>
-          <select
-            id="doc-select"
-            value={documentId}
-            onChange={(e) => setDocumentId(e.target.value)}
-            className="h-8 w-full rounded-lg border border-input bg-transparent px-2.5 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
-          >
-            <option value="">Select a document...</option>
-            {documents.map((doc) => (
-              <option key={doc.id} value={doc.id}>
-                {doc.filename}
-              </option>
-            ))}
-          </select>
+          <Select value={documentId || undefined} onValueChange={setDocumentId}>
+            <SelectTrigger id="doc-select" className="h-8 w-full">
+              <SelectValue placeholder="Select a document..." />
+            </SelectTrigger>
+            <SelectContent>
+              {documents.map((doc) => (
+                <SelectItem key={doc.id} value={doc.id}>
+                  {doc.filename}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </div>
         <Button type="submit" size="sm" variant="destructive" disabled={isRunning || !documentId}>
           {isRunning ? <Loader2 className="size-3.5 animate-spin" /> : "Run"}

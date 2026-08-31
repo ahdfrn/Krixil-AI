@@ -137,7 +137,32 @@ export const useChatStore = create<ChatState>((set, get) => ({
       (async () => {
         abortController = new AbortController();
         let realId = conversationId;
-        if (realId) ensureInitialized(realId);
+        // Tracks whether ensureInitialized has already run — needed because the backend always
+        // sends a "conversation" SSE event first, even for an already-known conversation id, so
+        // without this guard an existing conversation would get its user message + placeholder
+        // appended twice (once here immediately, once again in the "conversation" case below).
+        let initialized = false;
+        if (realId) {
+          ensureInitialized(realId);
+          initialized = true;
+        }
+
+        // Accumulated locally rather than re-read from the store on every "chunk" event, so a
+        // fast local model (many small SSE deltas per second) doesn't force a React re-render —
+        // and downstream, a full markdown re-parse + re-render of the whole message tree — for
+        // every single token. Flushed to the store at most once per animation frame instead; a
+        // long or code-heavy response streamed at full speed was genuinely freezing the tab
+        // (real bug, caught live) before this throttle existed.
+        let streamedContent = "";
+        let flushScheduled = false;
+        function scheduleFlush() {
+          if (flushScheduled) return;
+          flushScheduled = true;
+          requestAnimationFrame(() => {
+            flushScheduled = false;
+            if (realId) updateAssistant(realId, { content: streamedContent });
+          });
+        }
 
         try {
           for await (const event of streamMessage(
@@ -147,7 +172,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
             switch (event.type) {
               case "conversation": {
                 realId = event.conversation_id;
-                ensureInitialized(realId);
+                if (!initialized) {
+                  ensureInitialized(realId);
+                  initialized = true;
+                }
                 settled = true;
                 resolve(realId);
                 break;
@@ -156,15 +184,20 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 if (realId) updateAssistant(realId, { citations: event.citations });
                 break;
               }
+              case "tool_calls": {
+                if (realId) updateAssistant(realId, { toolCalls: event.tool_calls });
+                break;
+              }
               case "chunk": {
-                if (realId) {
-                  const current = get().messagesByConversation[realId]?.find((m) => m.id === assistantId);
-                  updateAssistant(realId, { content: (current?.content ?? "") + event.delta });
-                }
+                streamedContent += event.delta;
+                scheduleFlush();
                 break;
               }
               case "done": {
-                if (realId) updateAssistant(realId, { isStreaming: false });
+                // Flush synchronously here rather than waiting for the next animation frame —
+                // otherwise a queued flush from just before "done" could land after this and
+                // briefly show stale content with isStreaming already false.
+                if (realId) updateAssistant(realId, { content: streamedContent, isStreaming: false });
                 set({ generatingConversationId: null });
                 break;
               }
@@ -177,8 +210,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           if (realId) {
             updateAssistant(realId, {
               isStreaming: false,
-              content: get().messagesByConversation[realId]?.find((m) => m.id === assistantId)?.content
-                || "*Something went wrong generating a response.*",
+              content: streamedContent || "*Something went wrong generating a response.*",
             });
             set({ generatingConversationId: null });
           }

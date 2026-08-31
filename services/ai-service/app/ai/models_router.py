@@ -10,4 +10,4 @@ router = APIRouter(tags=["models"])
 
 @router.get("/models", response_model=list[ModelOut])
 async def list_models(tenant_ctx: TenantContext = Depends(get_tenant_context)) -> list[ModelOut]:
-    return get_model_catalog()
+    return await get_model_catalog()

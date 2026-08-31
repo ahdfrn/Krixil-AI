@@ -1,10 +1,10 @@
 "use client";
 
-import { Bot, Check, Loader2, Search, TriangleAlert, Wrench, X } from "lucide-react";
+import { Bot, Check, Loader2, Search, TriangleAlert, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 
-import { MarkdownContent } from "@/components/chat/markdown-content";
+import { StepView } from "@/components/agent-run/step-view";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -18,7 +18,6 @@ import {
   type AgentRunDetailOut,
   type AgentRunOut,
   type AgentRunStatus,
-  type AgentStepOut,
 } from "@/lib/api/agents";
 import { ApiError } from "@/lib/api/client";
 import { approveExecution, rejectExecution } from "@/lib/api/tools";
@@ -116,6 +115,7 @@ export default function AgentsPage() {
   }
 
   async function handleApprove(executionId: string) {
+    const runId = selectedRun?.id;
     setApprovalAction(executionId);
     try {
       const updated = await approveExecution(executionId);
@@ -128,10 +128,17 @@ export default function AgentsPage() {
       toast.error(err instanceof ApiError ? err.message : "Couldn't approve that execution.");
     } finally {
       setApprovalAction(null);
+      // The dialog was rendering a snapshot from when it first opened — without refetching here,
+      // it kept showing "Waiting on your approval" forever even after the tool had actually run
+      // (real bug, caught live during a demo). listRuns() too, since the run's status/badge in
+      // the "Past runs" list behind the dialog is equally stale otherwise.
+      if (runId) void openRun(runId);
+      void loadRuns();
     }
   }
 
   async function handleReject(executionId: string) {
+    const runId = selectedRun?.id;
     setApprovalAction(executionId);
     try {
       await rejectExecution(executionId);
@@ -140,6 +147,8 @@ export default function AgentsPage() {
       toast.error(err instanceof ApiError ? err.message : "Couldn't reject that execution.");
     } finally {
       setApprovalAction(null);
+      if (runId) void openRun(runId);
+      void loadRuns();
     }
   }
 
@@ -337,42 +346,3 @@ function RunDetail({
   );
 }
 
-function StepView({ step }: { step: AgentStepOut }) {
-  if (step.type === "tool_call") {
-    return (
-      <div className="flex items-start gap-2 rounded-lg border border-border bg-secondary/30 p-2.5 text-xs">
-        <Wrench className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
-        <div className="min-w-0">
-          <span className="font-medium">Called {step.tool_name}</span>
-          <pre className="mt-1 overflow-x-auto text-muted-foreground">
-            {JSON.stringify(step.content.arguments, null, 2)}
-          </pre>
-        </div>
-      </div>
-    );
-  }
-
-  if (step.type === "observation") {
-    const isPending = step.content.status === "pending_approval";
-    const isError = "error" in step.content;
-    return (
-      <div
-        className={`rounded-lg border p-2.5 text-xs ${
-          isError ? "border-destructive/30 bg-destructive/5 text-destructive" : "border-border bg-secondary/30"
-        }`}
-      >
-        <span className="font-medium">{isPending ? "Paused for approval" : isError ? "Tool error" : "Result"}</span>
-        <pre className="mt-1 overflow-x-auto text-muted-foreground">
-          {JSON.stringify(step.content, null, 2)}
-        </pre>
-      </div>
-    );
-  }
-
-  // final_response
-  return (
-    <div className="rounded-lg border border-primary/30 bg-primary/5 p-3 text-sm">
-      <MarkdownContent content={String(step.content.content ?? "")} />
-    </div>
-  );
-}

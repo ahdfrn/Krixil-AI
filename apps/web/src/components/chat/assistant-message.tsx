@@ -67,7 +67,7 @@ export function AssistantMessage({ message }: { message: ChatMessage }) {
         {showEmptyTyping ? (
           <TypingIndicator />
         ) : (
-          <MarkdownContent content={message.content} />
+          <MarkdownContent content={message.content} isStreaming={message.isStreaming} />
         )}
 
         {message.citations && <CitationList citations={message.citations} />}

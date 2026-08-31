@@ -37,7 +37,12 @@ export function ModelSelector({
   const [models, setModels] = useState<AIModel[]>([]);
 
   useEffect(() => {
-    listModels().then(setModels);
+    // A 401 here means the session already died (apiFetch's client already triggered logout()
+    // and the app's auth-transition effect will redirect to /login) — nothing more for this
+    // component to do, so swallow it rather than let an unhandled rejection crash the page.
+    listModels()
+      .then(setModels)
+      .catch(() => {});
   }, []);
 
   const selected = models.find((m) => m.id === value);

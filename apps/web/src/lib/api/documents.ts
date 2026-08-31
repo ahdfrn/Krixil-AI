@@ -10,6 +10,10 @@ export interface DocumentOut {
   status: "processing" | "ready" | "failed";
   chunk_count: number;
   error_message: string | null;
+  /** "conversation" entries were auto-captured from chat, not uploaded — no real file backs
+   * them, so there's nothing to download even though they otherwise behave like any other
+   * document (searchable, deletable). */
+  source: "upload" | "conversation";
   created_at: string;
 }
 

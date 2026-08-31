@@ -2,6 +2,12 @@ import re
 
 
 def clean_text(text: str) -> str:
+    # Some PDFs (unusual font/CID encodings, corrupted content streams) make pypdf's
+    # extract_text() emit literal NUL bytes — Postgres's text columns can't store 0x00 at all
+    # (CharacterNotInRepertoireError), so a document ingest would fail outright downstream with
+    # no indication why. Stripped here rather than in the PDF parser specifically, since this is
+    # the one normalization step every format (PDF/docx/txt/csv) already flows through.
+    text = text.replace("\x00", "")
     # Collapse runs of whitespace (extra spaces, repeated blank lines from PDF extraction) into
     # single spaces/newlines — cheap normalization, not a full text-cleaning pipeline.
     text = re.sub(r"[ \t]+", " ", text)

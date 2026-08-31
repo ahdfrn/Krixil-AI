@@ -6,11 +6,26 @@ from app.ai.mock_provider import MockProvider
 from app.core.config import get_settings
 
 # Factories, not instances: MockProvider is free to construct, but CloudModelProvider opens an
-# httpx connection pool — that only happens if "openai" is actually selected, and only once
-# (cached in _instances below), not for every request or at import time.
+# httpx connection pool — that only happens if "openai"/"ollama" is actually selected, and only
+# once (cached in _instances below), not for every request or at import time.
 _PROVIDER_FACTORIES: dict[str, Callable[[], ModelProvider]] = {
     "mock": lambda: MockProvider(),
-    "openai": lambda: CloudModelProvider(get_settings()),
+    "openai": lambda: CloudModelProvider(
+        name="openai",
+        base_url=get_settings().openai_base_url,
+        api_key=get_settings().openai_api_key,
+        model=get_settings().openai_model,
+        embedding_model=get_settings().openai_embedding_model,
+    ),
+    # Ollama needs no real API key — it ignores the Authorization header entirely, but the HTTP
+    # client still needs some non-empty value to send.
+    "ollama": lambda: CloudModelProvider(
+        name="ollama",
+        base_url=get_settings().ollama_base_url,
+        api_key="ollama",
+        model=get_settings().ollama_default_model,
+        embedding_model=get_settings().ollama_embedding_model,
+    ),
 }
 
 _instances: dict[str, ModelProvider] = {}

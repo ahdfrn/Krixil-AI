@@ -6,20 +6,19 @@ import respx
 
 from app.ai.base import ModelMessage, ToolSchema
 from app.ai.cloud_provider import CloudModelProvider
-from app.core.config import Settings
 
 BASE_URL = "https://mock.openai.test/v1"
 
 
 @pytest.fixture
 async def provider():
-    settings = Settings(
-        openai_api_key="test-key",
-        openai_base_url=BASE_URL,
-        openai_model="test-model",
-        openai_embedding_model="test-embed-model",
+    p = CloudModelProvider(
+        name="openai",
+        base_url=BASE_URL,
+        api_key="test-key",
+        model="test-model",
+        embedding_model="test-embed-model",
     )
-    p = CloudModelProvider(settings)
     yield p
     await p.aclose()
 

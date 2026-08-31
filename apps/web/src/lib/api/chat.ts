@@ -1,6 +1,6 @@
 import { API_BASE_URL } from "@/lib/api/client";
 import { useAuthStore } from "@/stores/auth-store";
-import type { Citation } from "@/types/chat";
+import type { Citation, ToolCallSummary } from "@/types/chat";
 
 interface BackendCitation {
   document_id: string;
@@ -9,9 +9,15 @@ interface BackendCitation {
   chunk_index: number;
 }
 
+interface BackendToolCall {
+  tool_name: string;
+  summary: string;
+}
+
 export type StreamEvent =
   | { type: "conversation"; conversation_id: string }
   | { type: "citations"; citations: Citation[] }
+  | { type: "tool_calls"; tool_calls: ToolCallSummary[] }
   | { type: "chunk"; delta: string }
   | { type: "done"; message_id: string; model: string }
   | { type: "error"; detail: string };
@@ -23,6 +29,16 @@ function mapCitations(raw: BackendCitation[]): Citation[] {
     page: c.page ?? undefined,
     // The backend doesn't return a snippet on chat citations — CitationList renders without one.
     snippet: "",
+  }));
+}
+
+// Tool calls resolve entirely before streaming starts (same timing RAG/citations already use), so
+// there's no live "running" phase to render here — each step arrives already "done".
+function mapToolCalls(raw: BackendToolCall[]): ToolCallSummary[] {
+  return raw.map((t, i) => ({
+    id: `${t.tool_name}-${i}`,
+    steps: [{ id: `${t.tool_name}-${i}-step`, label: t.summary, status: "done" as const }],
+    summary: t.summary,
   }));
 }
 
@@ -74,6 +90,8 @@ export async function* streamMessage(
 
         if (json.type === "citations") {
           yield { type: "citations", citations: mapCitations(json.citations) };
+        } else if (json.type === "tool_calls") {
+          yield { type: "tool_calls", tool_calls: mapToolCalls(json.tool_calls) };
         } else {
           yield json as StreamEvent;
         }

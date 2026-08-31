@@ -171,6 +171,43 @@ async def test_cannot_delete_another_tenants_conversation(client):
     assert len(list_resp.json()) == 1
 
 
+async def test_chat_reports_a_tool_call_when_the_message_triggers_one(client):
+    registered = await register(client)
+    headers = auth_headers(registered["access_token"])
+
+    resp = await client.post(
+        "/api/v1/chat", json={"message": "what's my usage this month?"}, headers=headers
+    )
+    assert resp.status_code == 200
+    tool_calls = resp.json()["tool_calls"]
+    assert tool_calls == [
+        {"tool_name": "usage.get_summary", "summary": "Checked your usage summary"}
+    ]
+
+
+async def test_chat_reports_no_tool_calls_for_an_ordinary_message(client):
+    registered = await register(client)
+    headers = auth_headers(registered["access_token"])
+
+    resp = await client.post("/api/v1/chat", json={"message": "hello"}, headers=headers)
+    assert resp.status_code == 200
+    assert resp.json()["tool_calls"] == []
+
+
+async def test_chat_never_offers_a_critical_risk_tool(client):
+    """document.delete is CRITICAL — chat never offers it to the model at all, regardless of
+    wording, since chat resolves tool calls with no human-approval step. This is the safety
+    boundary the feature depends on, tested directly rather than only asserted in docs."""
+    registered = await register(client)
+    headers = auth_headers(registered["access_token"])
+
+    resp = await client.post(
+        "/api/v1/chat", json={"message": "please delete this document for me"}, headers=headers
+    )
+    assert resp.status_code == 200
+    assert resp.json()["tool_calls"] == []
+
+
 async def test_chat_stream_emits_conversation_chunks_and_done(client):
     registered = await register(client)
     headers = auth_headers(registered["access_token"])
@@ -193,3 +230,30 @@ async def test_chat_stream_emits_conversation_chunks_and_done(client):
     detail_resp = await client.get(f"/api/v1/conversations/{conversation_id}", headers=headers)
     assert detail_resp.status_code == 200
     assert len(detail_resp.json()["messages"]) == 2
+
+
+async def test_chat_stream_emits_tool_calls_event_when_triggered(client):
+    registered = await register(client)
+    headers = auth_headers(registered["access_token"])
+
+    events = []
+    async with client.stream(
+        "POST",
+        "/api/v1/chat/stream",
+        json={"message": "what's my usage this month?"},
+        headers=headers,
+    ) as resp:
+        assert resp.status_code == 200
+        async for line in resp.aiter_lines():
+            if line.startswith("data: "):
+                events.append(json.loads(line[len("data: ") :]))
+
+    tool_call_events = [e for e in events if e["type"] == "tool_calls"]
+    assert len(tool_call_events) == 1
+    assert tool_call_events[0]["tool_calls"] == [
+        {"tool_name": "usage.get_summary", "summary": "Checked your usage summary"}
+    ]
+    # The tool_calls event must arrive before any chunk — it's resolved synchronously up front,
+    # same timing citations already use.
+    first_chunk_index = events.index(next(e for e in events if e["type"] == "chunk"))
+    assert events.index(tool_call_events[0]) < first_chunk_index

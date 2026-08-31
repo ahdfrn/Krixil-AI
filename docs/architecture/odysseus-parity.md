@@ -93,6 +93,58 @@ goal containing the word "search" (both tool names contain that word). This is a
 MockProvider limitation unrelated to this change — with a real model provider instead of mock, real
 reasoning would pick the semantically correct tool. Not fixed here; out of this phase's scope.
 
+## Phase 1 addendum: inline tool-calling in regular Chat
+
+The user tried asking the normal Chat page (not Agents/Tools) to research something and got a
+plain "Mock response to: ..." with no search — a real gap, not a misunderstanding: `/chat` and
+`/chat/stream` never had any tool access at all, only the separate Agents loop did. Confirmed
+("oke lanjutkan") this should be closed rather than requiring a trip to the Agents page for
+something as ordinary as "search the web for X" typed straight into Chat.
+
+**Design, not a detour through the Agent loop**: Agents and Chat stay separate systems — Chat has
+RAG grounding + short-term memory + real token streaming the Agent loop doesn't share, and an
+agent run can take up to 120s across 8 steps, the wrong shape for a conversational reply. Instead
+Chat got its own small, bounded, single-turn capability: `app/chat/tool_use.py#run_chat_tools()`
+resolves up to `chat_max_tool_calls` (default 3, smaller than `agent_max_tool_calls=5` on purpose)
+tool calls synchronously — same message-augmentation loop `app/agents/runner.py` already uses,
+reusing `request_tool_execution` — before the final `generate`/`stream` call runs.
+
+**Safety boundary, load-bearing not incidental**: only `RiskLevel.LOW` tools are ever offered to
+the model in a chat turn (`knowledge.search`, `usage.get_summary`, `web.search` — never
+`document.delete`, `CRITICAL`). Chat resolves tool calls with no human-approval step, so the model
+is never even offered a tool that could need one. Tested directly (`test_chat_never_offers_a_
+critical_risk_tool`), not just documented in prose.
+
+**Frontend**: `types/chat.ts`'s `ToolCallSummary`/`ToolCallStep` and
+`components/chat/tool-call-display.tsx` had sat dormant since Web Phase 1 (built against mock
+data, Web Phase 2 documented "no backend event exists for this"). A new SSE event
+(`{"type": "tool_calls", ...}`, emitted right where `citations` already is, before any `chunk`)
+and matching `ChatResponse.tool_calls` field finally feed them real data — no UI code changed,
+`assistant-message.tsx` already rendered `message.toolCalls` unconditionally.
+
+**Not persisted**, matching the existing citations trade-off: reopening an old conversation won't
+show what was searched for it.
+
+### Verified live (2026-08-31)
+
+`pytest` 101/101 (+4 new), `ruff`, `mypy` clean. `npm run lint` / `npm run build` clean. `docker
+compose up -d --build api` rebuilt. Live: a message containing "usage" correctly triggered
+`usage.get_summary` with a real DB-backed result flowing into the model's context (confirmed via
+`GET /tools/executions`, not just the chat response's own claim); an ordinary message triggered no
+tool (regression check); "please delete this document for me" triggered nothing (the safety
+boundary, live not just unit-tested); the SSE stream emitted `tool_calls` before the first `chunk`,
+exactly as designed. In the actual browser (Playwright), the tool-call badge rendered for real for
+the first time — "✓ Checked your usage summary" — zero console errors.
+
+**The same MockProvider tie-break noted in Phase 1/2 resurfaced here**: a message containing
+"search" (e.g. "search the web for...") triggers `knowledge.search`, not `web.search` — both tool
+names contain the word "search," and `knowledge.search` sorts first alphabetically in
+`list_tools()`, which `MockProvider`'s naive matching always prefers on a tie. This is not a
+regression from this change (identical root cause already documented), and it proved the pipeline
+itself is real: a genuine LOW-risk tool executed, with real output flowing into context. A real
+model provider's actual reasoning (not substring matching) is needed to see `web.search`
+specifically triggered from Chat — not yet verified, same open item Phase 1/2 already left.
+
 ## Phase 2: Deep Research mode
 
 **No backend change at all.** As predicted when this track was planned: `POST /agents/run` already

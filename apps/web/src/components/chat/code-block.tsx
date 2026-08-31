@@ -5,7 +5,15 @@ import { useState } from "react";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
 
-export function CodeBlock({ language, code }: { language: string; code: string }) {
+export function CodeBlock({
+  language,
+  code,
+  isStreaming,
+}: {
+  language: string;
+  code: string;
+  isStreaming?: boolean;
+}) {
   const [copied, setCopied] = useState(false);
 
   async function handleCopy() {
@@ -34,19 +42,30 @@ export function CodeBlock({ language, code }: { language: string; code: string }
           )}
         </button>
       </div>
-      <SyntaxHighlighter
-        language={language || "text"}
-        style={oneDark}
-        customStyle={{
-          margin: 0,
-          padding: "0.75rem 1rem",
-          fontSize: "0.8125rem",
-          background: "transparent",
-        }}
-        wrapLongLines
-      >
-        {code}
-      </SyntaxHighlighter>
+      {isStreaming ? (
+        // Prism's tokenizer re-parses the *entire* code block from scratch on every render —
+        // fine once, but a growing block re-highlighted on every streamed token is O(n^2) work
+        // over the course of a response and was freezing the tab on longer code-heavy answers
+        // (real bug, caught live). Plain text while streaming; swaps to full highlighting once
+        // (isStreaming flips false) when the content stops changing.
+        <pre className="overflow-x-auto px-4 py-3 font-mono text-[0.8125rem] whitespace-pre-wrap">
+          <code>{code}</code>
+        </pre>
+      ) : (
+        <SyntaxHighlighter
+          language={language || "text"}
+          style={oneDark}
+          customStyle={{
+            margin: 0,
+            padding: "0.75rem 1rem",
+            fontSize: "0.8125rem",
+            background: "transparent",
+          }}
+          wrapLongLines
+        >
+          {code}
+        </SyntaxHighlighter>
+      )}
     </div>
   );
 }

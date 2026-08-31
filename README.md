@@ -39,6 +39,7 @@ docker compose $envFile -f infrastructure\compose\docker-compose.yml exec api al
 |---|---|
 | API + interactive docs | http://localhost:8000/docs |
 | Metrics (Prometheus format) | http://localhost:8000/metrics |
+| Sandbox runner (coding-agent command execution — see `docs/architecture/coding-agent.md`) | http://localhost:8001/health |
 | Prometheus | http://localhost:9090 |
 | Grafana ("Krixil AI - Overview" dashboard, anonymous admin — **local dev only**) | http://localhost:3001 |
 | Jaeger (traces) | http://localhost:16686 |
@@ -115,7 +116,9 @@ Deploying to staging/production isn't automated yet — there's no target host t
 
 ```
 services/ai-service/     the FastAPI application
-infrastructure/compose/   Docker Compose stack (api, postgres, redis, minio, prometheus, grafana, jaeger)
+services/sandbox-runner/ isolated command execution for the coding agent (the only service with Docker socket access)
+services/host-runner/    real, unsandboxed access to a folder on this machine for the coding agent — native Windows, not Docker; see its README before running it
+infrastructure/compose/   Docker Compose stack (api, postgres, redis, minio, prometheus, grafana, jaeger, sandbox-runner)
 docs/architecture/        design notes, trade-offs, and the roadmap for each phase
 .github/workflows/        CI/CD pipeline
 ```

@@ -1,6 +1,6 @@
 "use client";
 
-import { BookOpen, FileText, Loader2, Search, Trash2, Upload } from "lucide-react";
+import { BookOpen, FileText, Loader2, MessageSquare, Search, Trash2, Upload } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
@@ -191,11 +191,16 @@ export default function KnowledgePage() {
             ) : (
               documents.map((doc) => (
                 <div key={doc.id} className="flex items-center gap-3 rounded-lg border border-border p-3">
-                  <FileText className="size-4 shrink-0 text-muted-foreground" />
+                  {doc.source === "conversation" ? (
+                    <MessageSquare className="size-4 shrink-0 text-muted-foreground" />
+                  ) : (
+                    <FileText className="size-4 shrink-0 text-muted-foreground" />
+                  )}
                   <div className="min-w-0 flex-1">
                     <p className="truncate text-sm font-medium">{doc.filename}</p>
                     <p className="text-xs text-muted-foreground">
-                      {formatBytes(doc.size_bytes)} · {doc.chunk_count} chunk{doc.chunk_count === 1 ? "" : "s"} ·{" "}
+                      {doc.source === "conversation" ? "From a conversation" : formatBytes(doc.size_bytes)} ·{" "}
+                      {doc.chunk_count} chunk{doc.chunk_count === 1 ? "" : "s"} ·{" "}
                       {new Date(doc.created_at).toLocaleDateString()}
                     </p>
                     {doc.status === "failed" && doc.error_message && (

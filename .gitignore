@@ -16,9 +16,14 @@ htmlcov/
 # Docker
 *.pid
 
+# Training
+training/unsloth_compiled_cache/
+*.log
+
 # IDE
 .vscode/
 .idea/
+.claude/
 
 # OS
 .DS_Store

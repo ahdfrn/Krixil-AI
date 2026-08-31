@@ -43,6 +43,15 @@ class Settings(BaseSettings):
     openai_model: str = "gpt-4o-mini"
     openai_embedding_model: str = "text-embedding-3-small"
 
+    # A local Ollama instance, reached over its own OpenAI-compatible endpoint — same
+    # CloudModelProvider class as "openai" above, just pointed elsewhere with its own config so
+    # real OpenAI-cloud settings stay untouched. host.docker.internal is correct when the api
+    # container talks to Ollama running natively on the Windows host; use localhost instead when
+    # running the app directly (outside Docker).
+    ollama_base_url: str = "http://host.docker.internal:11434/v1"
+    ollama_default_model: str = "qwen2.5:7b"
+    ollama_embedding_model: str = "nomic-embed-text"
+
     short_term_memory_max_messages: int = 20
     short_term_memory_ttl_seconds: int = 60 * 60 * 24  # 24h — this is short-term cache, not history
 
@@ -61,8 +70,24 @@ class Settings(BaseSettings):
     # Budgets an agent run stops itself at — not client-configurable in Phase 4 (kept simple);
     # per-run overrides are a natural, self-contained addition later if needed.
     agent_max_steps: int = 8
-    agent_max_tool_calls: int = 5
+    # Raised from 5 to match agent_max_steps — caught live: switching the default model to
+    # llama3.1:8b (from qwen2.5:7b) made a real, measurable difference in whether the agent even
+    # attempts multi-step self-correction (qwen2.5:7b almost never used more than 1 tool call;
+    # llama3.1:8b genuinely retried after a wrong path, listed files, then wrote correctly — 6
+    # calls deep) but it then ran out of budget one call short of actually running the file it had
+    # just written. 5 was sized around the weaker model's behavior, not this one's.
+    agent_max_tool_calls: int = 8
     agent_max_execution_seconds: int = 120
+
+    # How many tool calls a single /chat or /chat/stream turn may make before it's forced to give
+    # a final answer — smaller than agent_max_tool_calls on purpose, chat should stay
+    # conversationally snappy rather than turn into a research loop (that's what Agents /
+    # Deep Research mode is for).
+    chat_max_tool_calls: int = 3
+
+    # Cap on how many long-term-memory facts get injected into a single chat turn's context —
+    # same role rag_top_k plays for RAG. See app/memory/long_term.py.
+    memory_max_facts: int = 50
 
     # Tracing is opt-out (not opt-in): if no collector is reachable at otel_exporter_endpoint,
     # spans just fail to export in the background — harmless, and never blocks a request.
@@ -72,6 +97,31 @@ class Settings(BaseSettings):
     # Empty by default — the web.search tool (app/tools/web_tools.py) fails with a clear,
     # non-fabricated error when this is unset rather than pretending to search anything.
     tavily_api_key: str = ""
+
+    # Autonomous fine-tuning (training/, a separate native-Windows project — see
+    # docs/architecture/learning-and-memory.md Phase 3). 100 rows matches Unsloth's own
+    # documented bare-minimum guidance for a dataset that won't just overfit.
+    finetune_min_examples: int = 100
+    finetune_check_interval_hours: int = 24
+    finetune_min_message_chars: int = 20
+
+    # Coding agent (app/workspace, app/tools/code_tools.py, services/sandbox-runner). Each
+    # tenant's files live under workspace_root/{tenant_id}/ — a bind-mounted volume shared with
+    # the sandbox-runner container so it can see the same files a run command touches. Command
+    # execution itself never happens inside the api container; api only ever calls out to
+    # sandbox-runner over HTTP, matching this app's other container-to-container calls.
+    workspace_root: str = "/workspaces"
+    sandbox_runner_url: str = "http://sandbox-runner:8001"
+    code_execution_timeout_seconds: int = 30
+
+    # Real host-folder access (services/host-runner, app/tools/host_tools.py) — a second,
+    # separate, native-Windows service (not in Docker, same reason training/ isn't) giving the
+    # agent unsandboxed read/write/execute access to a real folder on this machine. No approval,
+    # no isolation, full network — see docs/architecture/coding-agent.md ("Real host-folder
+    # access") before touching this. host_runner_url follows the same host.docker.internal
+    # pattern already used to reach the natively-installed Ollama.
+    host_runner_url: str = "http://host.docker.internal:8002"
+    host_runner_timeout_seconds: int = 60
 
     @property
     def sqlalchemy_database_url(self) -> str:

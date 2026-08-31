@@ -14,7 +14,6 @@ import fakeredis.aioredis
 import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-from sqlalchemy.pool import StaticPool
 
 import app.models  # noqa: F401  # populate Base.metadata before create_all
 from app.db.base import Base
@@ -24,13 +23,22 @@ from app.main import app
 from app.storage.dependency import get_storage
 from tests.fakes import FakeObjectStorage
 
-TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
-
 
 @pytest.fixture
-async def engine():
+async def engine(tmp_path):
+    # A temp *file* database, not `:memory:` + StaticPool. StaticPool hands every session the
+    # exact same physical connection, which is fine as long as only one session is ever open at a
+    # time — but app/memory/long_term.py's background task opens a second, independent session
+    # mid-request (see app/chat/router.py), and on a single shared SQLite connection that second
+    # session's rollback (e.g. MockProvider's non-JSON response failing to parse) rolled back the
+    # *first* session's still-uncommitted work too — a real bug this test suite caught, traced to
+    # FastAPI not guaranteeing BackgroundTasks run after a yield-dependency's own commit. A file-
+    # backed database lets each session open its own real connection with proper transaction
+    # isolation, matching how separate Postgres connections behave in production (where this was
+    # never actually a risk) — StaticPool's single-connection sharing was the test-only artifact.
+    db_path = tmp_path / "test.db"
     test_engine = create_async_engine(
-        TEST_DATABASE_URL, connect_args={"check_same_thread": False}, poolclass=StaticPool
+        f"sqlite+aiosqlite:///{db_path}", connect_args={"check_same_thread": False}
     )
     async with test_engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -65,6 +73,10 @@ async def override_dependencies(session_factory, monkeypatch):
     # chat_stream opens its own session directly (see app/chat/router.py) rather than via
     # Depends(get_session), so it needs its own patch target to land on the test engine too.
     monkeypatch.setattr("app.chat.router.AsyncSessionLocal", session_factory)
+    # extract_and_store_memories (app/memory/long_term.py) is a background task that also opens
+    # its own session directly, entirely detached from any request's Depends(get_session) — same
+    # reason it needs its own patch target here too.
+    monkeypatch.setattr("app.memory.long_term.AsyncSessionLocal", session_factory)
 
     yield
 

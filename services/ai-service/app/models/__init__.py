@@ -8,12 +8,14 @@ from app.models.conversation import Conversation
 from app.models.document import Document
 from app.models.document_chunk import DocumentChunk
 from app.models.evaluation import EvaluationResult, EvaluationRun
+from app.models.finetune_run import FinetuneRun
 from app.models.message import Message
 from app.models.role import Role
 from app.models.tenant import Tenant
 from app.models.tool_execution import ToolExecution
 from app.models.usage_record import UsageRecord
 from app.models.user import User
+from app.models.user_memory import UserMemory
 
 __all__ = [
     "AgentRun",
@@ -24,10 +26,12 @@ __all__ = [
     "DocumentChunk",
     "EvaluationResult",
     "EvaluationRun",
+    "FinetuneRun",
     "Message",
     "Role",
     "Tenant",
     "ToolExecution",
     "UsageRecord",
     "User",
+    "UserMemory",
 ]

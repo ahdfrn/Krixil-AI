@@ -19,21 +19,30 @@ function groupLabelFor(isoDate: string): DateGroupLabel {
   return "Older";
 }
 
-export function groupConversationsByDate(
-  conversations: Conversation[],
-): { label: DateGroupLabel; conversations: Conversation[] }[] {
-  const groups = new Map<DateGroupLabel, Conversation[]>();
-  for (const conversation of conversations) {
-    const label = groupLabelFor(conversation.updatedAt);
+/** Today/Yesterday/Previous 7 Days/Older bucketing, generic over anything with an `updatedAt` —
+ * shared by Chat's conversation list and the Code sidebar's session list so both stay visually
+ * consistent without duplicating the bucketing logic. */
+export function groupByDate<T extends { updatedAt: string }>(
+  items: T[],
+): { label: DateGroupLabel; items: T[] }[] {
+  const groups = new Map<DateGroupLabel, T[]>();
+  for (const item of items) {
+    const label = groupLabelFor(item.updatedAt);
     const existing = groups.get(label) ?? [];
-    existing.push(conversation);
+    existing.push(item);
     groups.set(label, existing);
   }
 
   return GROUP_ORDER.filter((label) => groups.has(label)).map((label) => ({
     label,
-    conversations: groups
+    items: groups
       .get(label)!
       .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()),
   }));
+}
+
+export function groupConversationsByDate(
+  conversations: Conversation[],
+): { label: DateGroupLabel; conversations: Conversation[] }[] {
+  return groupByDate(conversations).map(({ label, items }) => ({ label, conversations: items }));
 }

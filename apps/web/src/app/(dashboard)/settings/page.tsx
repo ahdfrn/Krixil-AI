@@ -1,6 +1,18 @@
 "use client";
 
-import { Monitor, Moon, ShieldCheck, ShieldOff, Sun } from "lucide-react";
+import {
+  Brain,
+  CheckCircle2,
+  Cpu,
+  Loader2,
+  Monitor,
+  Moon,
+  ShieldCheck,
+  ShieldOff,
+  Sun,
+  Trash2,
+  XCircle,
+} from "lucide-react";
 import { useTheme } from "next-themes";
 import QRCode from "qrcode";
 import { useEffect, useState } from "react";
@@ -22,6 +34,14 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { confirm2FA, disable2FA, setup2FA, type TotpSetup } from "@/lib/api/auth";
 import { ApiError } from "@/lib/api/client";
+import {
+  createMemory,
+  deleteMemory,
+  listMemories,
+  setMemoryEnabled,
+  type MemoryFact,
+} from "@/lib/api/memory";
+import { getFinetuneStatus, triggerFinetuneRun, type FinetuneRun, type FinetuneStatus } from "@/lib/api/finetune";
 import { executeTool } from "@/lib/api/tools";
 import { cn } from "@/lib/utils";
 import { useAuthStore } from "@/stores/auth-store";
@@ -32,6 +52,7 @@ const SECTIONS = [
   "Account",
   "AI Preferences",
   "Memory",
+  "Fine-tuning",
   "Privacy",
   "Security",
   "API Keys",
@@ -40,7 +61,13 @@ const SECTIONS = [
 ] as const;
 
 const PLACEHOLDER_SECTIONS = SECTIONS.filter(
-  (s) => s !== "Appearance" && s !== "Account" && s !== "Usage" && s !== "Security",
+  (s) =>
+    s !== "Appearance" &&
+    s !== "Account" &&
+    s !== "Usage" &&
+    s !== "Security" &&
+    s !== "Memory" &&
+    s !== "Fine-tuning",
 );
 
 const THEME_OPTIONS = [
@@ -153,6 +180,14 @@ export default function SettingsPage() {
 
           <TabsContent value="Security" className="space-y-4">
             <SecurityTab />
+          </TabsContent>
+
+          <TabsContent value="Memory" className="space-y-4">
+            <MemoryTab />
+          </TabsContent>
+
+          <TabsContent value="Fine-tuning" className="space-y-4">
+            <FinetuneTab />
           </TabsContent>
 
           <TabsContent value="Usage" className="space-y-4">
@@ -404,6 +439,283 @@ function SecurityTab() {
           </form>
         </AlertDialogContent>
       </AlertDialog>
+    </div>
+  );
+}
+
+function MemoryTab() {
+  const user = useAuthStore((s) => s.user);
+  const updateUser = useAuthStore((s) => s.updateUser);
+
+  const [memories, setMemories] = useState<MemoryFact[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [newFact, setNewFact] = useState("");
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  async function loadMemories() {
+    setIsLoading(true);
+    try {
+      setMemories(await listMemories());
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : "Couldn't load what Krixil remembers.");
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    // Fetch-on-mount, same pattern as the rest of this app's data loading (chat-store.ts).
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void loadMemories();
+  }, []);
+
+  async function handleToggle() {
+    const next = !user?.memory_enabled;
+    try {
+      const result = await setMemoryEnabled(next);
+      updateUser({ memory_enabled: result.memory_enabled });
+      toast.success(result.memory_enabled ? "Memory is on." : "Memory is off.");
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : "Couldn't change that.");
+    }
+  }
+
+  async function handleAdd(e: React.FormEvent) {
+    e.preventDefault();
+    const content = newFact.trim();
+    if (!content) return;
+    setIsSubmitting(true);
+    try {
+      const memory = await createMemory(content);
+      setMemories((prev) => [memory, ...prev]);
+      setNewFact("");
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : "Couldn't save that.");
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
+
+  async function handleDelete(id: string) {
+    const previous = memories;
+    setMemories((prev) => prev.filter((m) => m.id !== id));
+    try {
+      await deleteMemory(id);
+    } catch (err) {
+      setMemories(previous);
+      toast.error(err instanceof ApiError ? err.message : "Couldn't remove that.");
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="rounded-xl border border-border p-4">
+        <h2 className="text-sm font-medium">Long-term memory</h2>
+        <p className="mt-1 text-xs text-muted-foreground">
+          When on, Krixil picks up durable facts from your conversations (like your name or
+          ongoing projects) and remembers them in future conversations too — not just within one
+          chat. Conversations worth remembering also become searchable in your Knowledge base, the
+          same way an uploaded document would.
+        </p>
+        <div className="mt-4 flex items-center gap-3 rounded-lg border border-border p-3">
+          <Brain
+            className={cn(
+              "size-5 shrink-0",
+              user?.memory_enabled ? "text-primary" : "text-muted-foreground",
+            )}
+          />
+          <div className="flex-1">
+            <p className="text-sm font-medium">{user?.memory_enabled ? "On" : "Off"}</p>
+            <p className="text-xs text-muted-foreground">
+              {user?.memory_enabled
+                ? "Krixil may remember things you share in chat."
+                : "Krixil won't remember anything new, and won't use what it already knows."}
+            </p>
+          </div>
+          <Button size="sm" variant={user?.memory_enabled ? "destructive" : "default"} onClick={handleToggle}>
+            {user?.memory_enabled ? "Turn off" : "Turn on"}
+          </Button>
+        </div>
+      </div>
+
+      <div className="rounded-xl border border-border p-4">
+        <h2 className="text-sm font-medium">What Krixil remembers</h2>
+        <form onSubmit={handleAdd} className="mt-3 flex items-center gap-2">
+          <Input
+            value={newFact}
+            onChange={(e) => setNewFact(e.target.value)}
+            placeholder="Tell Krixil something to remember..."
+            className="flex-1"
+          />
+          <Button type="submit" size="sm" disabled={isSubmitting || !newFact.trim()}>
+            Add
+          </Button>
+        </form>
+
+        <div className="mt-4 flex flex-col gap-2">
+          {isLoading ? (
+            Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-10 w-full rounded-lg" />)
+          ) : memories.length === 0 ? (
+            <p className="text-xs text-muted-foreground">
+              Nothing yet — Krixil hasn&apos;t picked up any durable facts from your conversations.
+            </p>
+          ) : (
+            memories.map((memory) => (
+              <div
+                key={memory.id}
+                className="flex items-start justify-between gap-3 rounded-lg border border-border p-3 text-sm"
+              >
+                <span className="min-w-0 break-words">{memory.content}</span>
+                <button
+                  type="button"
+                  onClick={() => handleDelete(memory.id)}
+                  aria-label="Forget this"
+                  className="shrink-0 text-muted-foreground hover:text-destructive"
+                >
+                  <Trash2 className="size-4" />
+                </button>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const RUN_STATUS_LABEL: Record<FinetuneRun["status"], string> = {
+  requested: "Requested",
+  running: "Running",
+  promoted: "Promoted",
+  discarded: "Discarded",
+  failed: "Failed",
+};
+
+function FinetuneTab() {
+  const [status, setStatus] = useState<FinetuneStatus | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isTriggering, setIsTriggering] = useState(false);
+
+  async function loadStatus() {
+    setIsLoading(true);
+    try {
+      setStatus(await getFinetuneStatus());
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : "Couldn't load fine-tuning status.");
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    // Fetch-on-mount, same pattern as the rest of this app's data loading (chat-store.ts).
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void loadStatus();
+  }, []);
+
+  async function handleRunNow() {
+    setIsTriggering(true);
+    try {
+      await triggerFinetuneRun();
+      toast.success("Requested — the training scheduler will pick this up on its next check.");
+      await loadStatus();
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : "Couldn't request a run.");
+    } finally {
+      setIsTriggering(false);
+    }
+  }
+
+  const progress = status ? Math.min(100, (status.example_count / status.min_examples) * 100) : 0;
+
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="rounded-xl border border-border p-4">
+        <h2 className="text-sm font-medium">Autonomous fine-tuning</h2>
+        <p className="mt-1 text-xs text-muted-foreground">
+          Once there&apos;s enough real conversation history, Krixil periodically fine-tunes its
+          own model on it — evaluated against the current model first, and only kept if it doesn&apos;t
+          perform worse. A kept model shows up as a new choice in the model dropdown; nothing is
+          ever silently replaced.
+        </p>
+
+        {isLoading ? (
+          <Skeleton className="mt-4 h-16 w-full rounded-lg" />
+        ) : status ? (
+          <div className="mt-4 flex flex-col gap-3 rounded-lg border border-border p-3">
+            <div className="flex items-center justify-between text-sm">
+              <span className="font-medium">
+                {status.example_count} of {status.min_examples} examples
+              </span>
+              <span className="text-xs text-muted-foreground">
+                {status.ready ? "Ready to train" : "Not enough real usage yet"}
+              </span>
+            </div>
+            <div className="h-1.5 w-full overflow-hidden rounded-full bg-secondary">
+              <div
+                className="h-full rounded-full bg-primary transition-all"
+                style={{ width: `${progress}%` }}
+              />
+            </div>
+            <div className="flex items-center justify-between">
+              <p className="text-xs text-muted-foreground">
+                {status.ready
+                  ? "The next scheduled check will start a run automatically, or trigger one now."
+                  : "Krixil keeps a small quality filter on real conversations, so more real usage is the only way to reach this."}
+              </p>
+              <Button size="sm" onClick={handleRunNow} disabled={isTriggering || !status.ready}>
+                {isTriggering && <Loader2 className="size-3.5 animate-spin" />}
+                Run now
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <p className="mt-4 text-xs text-muted-foreground">Couldn&apos;t load status.</p>
+        )}
+      </div>
+
+      <div className="rounded-xl border border-border p-4">
+        <h2 className="text-sm font-medium">Run history</h2>
+        {isLoading ? (
+          <div className="mt-3 flex flex-col gap-2">
+            {Array.from({ length: 2 }).map((_, i) => (
+              <Skeleton key={i} className="h-14 w-full rounded-lg" />
+            ))}
+          </div>
+        ) : !status || status.runs.length === 0 ? (
+          <p className="mt-2 text-xs text-muted-foreground">
+            No runs yet — nothing has happened here on its own, and none have been requested
+            manually.
+          </p>
+        ) : (
+          <div className="mt-3 flex flex-col gap-2">
+            {status.runs.map((run) => (
+              <div key={run.id} className="rounded-lg border border-border p-3 text-sm">
+                <div className="flex items-center gap-2">
+                  {run.status === "promoted" && <CheckCircle2 className="size-4 shrink-0 text-primary" />}
+                  {(run.status === "discarded" || run.status === "failed") && (
+                    <XCircle className="size-4 shrink-0 text-muted-foreground" />
+                  )}
+                  {(run.status === "requested" || run.status === "running") && (
+                    <Cpu className="size-4 shrink-0 text-muted-foreground" />
+                  )}
+                  <span className="font-medium">{RUN_STATUS_LABEL[run.status]}</span>
+                  <span className="ml-auto text-xs text-muted-foreground">
+                    {new Date(run.created_at).toLocaleString()}
+                  </span>
+                </div>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {run.example_count} examples
+                  {run.eval_pass_count != null &&
+                    ` · evaluation: ${run.eval_pass_count} passed, ${run.eval_fail_count} failed`}
+                  {run.promoted_tag && ` · now available as "${run.promoted_tag}"`}
+                </p>
+                {run.detail && <p className="mt-1 text-xs text-muted-foreground">{run.detail}</p>}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

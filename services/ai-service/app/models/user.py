@@ -32,3 +32,7 @@ class User(UUIDPKMixin, TimestampMixin, Base):
     # flips true once the user proves possession with a real code (POST /auth/2fa/confirm).
     totp_secret: Mapped[str | None] = mapped_column(String(64), nullable=True)
     totp_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+    # Gates both long-term-memory extraction and retrieval (app/memory/long_term.py) — an "AI
+    # that always remembers what you say" needs an off switch on principle.
+    memory_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)

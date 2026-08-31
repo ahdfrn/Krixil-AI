@@ -1,7 +1,8 @@
+import asyncio
 import json
 import uuid
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, BackgroundTasks, Depends, status
 from fastapi.responses import StreamingResponse
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,12 +20,14 @@ from app.chat.service import (
     rename_conversation,
     save_message,
 )
+from app.chat.tool_use import run_chat_tools
 from app.core.logging import get_logger
 from app.core.rate_limit import enforce_chat_rate_limit
 from app.core.usage import record_usage
 from app.db.redis import get_redis
 from app.db.session import AsyncSessionLocal, get_session
 from app.memory import short_term
+from app.memory.long_term import build_memory_context, extract_and_store_memories
 from app.observability.metrics import MODEL_REQUEST_DURATION, TOKEN_USAGE
 from app.rag.context import build_rag_context
 from app.schemas.chat import (
@@ -42,15 +45,37 @@ router = APIRouter(tags=["chat"])
 logger = get_logger(__name__)
 model_router = ModelRouter()
 
+# /chat/stream has no BackgroundTasks dependency available inside its hand-rolled generator (it's
+# not a normal Depends-based response), so memory extraction there uses asyncio.create_task
+# directly — this set holds a reference to each task so it can't be garbage-collected mid-flight
+# (a well-known asyncio fire-and-forget gotcha), and each task removes itself once done.
+_background_memory_tasks: set[asyncio.Task] = set()
+
+
+def _fire_and_forget(coro) -> None:
+    task = asyncio.create_task(coro)
+    _background_memory_tasks.add(task)
+    task.add_done_callback(_background_memory_tasks.discard)
+
+
+def _model_kwargs(model_id: str | None) -> dict:
+    """"auto" and None both mean "use the provider's own configured default" — only a real,
+    specific model id gets forwarded, as a `model=` kwarg CloudModelProvider already merges into
+    its request payload, overriding its own default for just this call."""
+    if model_id is None or model_id == "auto":
+        return {}
+    return {"model": model_id}
+
 
 @router.post("/chat", response_model=ChatResponse, dependencies=[Depends(enforce_chat_rate_limit)])
 async def chat(
     payload: ChatRequest,
+    background_tasks: BackgroundTasks,
     tenant_ctx: TenantContext = Depends(get_tenant_context),
     session: AsyncSession = Depends(get_session),
     redis: Redis = Depends(get_redis),
 ) -> ChatResponse:
-    validate_model_id(payload.model)
+    await validate_model_id(payload.model)
     conversation = await get_or_create_conversation(session, tenant_ctx, payload.conversation_id)
     context = await get_context_messages(session, redis, tenant_ctx, conversation.id)
 
@@ -60,20 +85,36 @@ async def chat(
     )
 
     provider = model_router.get_provider()
+    memory_message = await build_memory_context(session, tenant_ctx)
     rag_message, citations = await build_rag_context(session, tenant_ctx, provider, payload.message)
 
     model_messages = context + [ModelMessage(role="user", content=payload.message)]
     if rag_message is not None:
         model_messages = [rag_message] + model_messages
+    if memory_message is not None:
+        model_messages = [memory_message] + model_messages
+
+    tool_calls = await run_chat_tools(
+        session, tenant_ctx, provider, model_messages, model_id=payload.model
+    )
 
     with MODEL_REQUEST_DURATION.labels(provider=provider.name, operation="generate").time():
-        response = await provider.generate(model_messages)
+        response = await provider.generate(model_messages, **_model_kwargs(payload.model))
 
     assistant_message = await save_message(
         session, tenant_ctx, conversation.id, role="assistant", content=response.content
     )
     await short_term.append_message(
         redis, tenant_ctx.tenant_id, conversation.id, "assistant", response.content
+    )
+    background_tasks.add_task(
+        extract_and_store_memories,
+        tenant_ctx.tenant_id,
+        tenant_ctx.user_id,
+        conversation.id,
+        conversation.title,
+        payload.message,
+        response.content,
     )
     await record_usage(
         session,
@@ -103,6 +144,7 @@ async def chat(
         message=MessageOut.model_validate(assistant_message),
         model=response.model,
         citations=citations,
+        tool_calls=tool_calls,
     )
 
 
@@ -115,7 +157,7 @@ async def chat_stream(
     # Validated here, outside event_stream(), so a bad model id gets a real 400 response instead
     # of a 200-with-SSE-error-event (which is how failures inside the generator surface, since the
     # StreamingResponse's headers are already committed by the time it starts running).
-    validate_model_id(payload.model)
+    await validate_model_id(payload.model)
 
     # Deliberately NOT using Depends(get_session) here: FastAPI tears down yield-dependencies
     # once the endpoint function returns, which for a StreamingResponse can be before the body
@@ -143,6 +185,7 @@ async def chat_stream(
                 yield f"data: {json.dumps(conversation_payload)}\n\n"
 
                 provider = model_router.get_provider()
+                memory_message = await build_memory_context(session, tenant_ctx)
                 rag_message, citations = await build_rag_context(
                     session, tenant_ctx, provider, payload.message
                 )
@@ -156,12 +199,26 @@ async def chat_stream(
                 model_messages = context + [ModelMessage(role="user", content=payload.message)]
                 if rag_message is not None:
                     model_messages = [rag_message] + model_messages
+                if memory_message is not None:
+                    model_messages = [memory_message] + model_messages
+
+                tool_calls = await run_chat_tools(
+                    session, tenant_ctx, provider, model_messages, model_id=payload.model
+                )
+                if tool_calls:
+                    tool_calls_payload = {
+                        "type": "tool_calls",
+                        "tool_calls": [tc.model_dump(mode="json") for tc in tool_calls],
+                    }
+                    yield f"data: {json.dumps(tool_calls_payload)}\n\n"
 
                 full_content = ""
                 with MODEL_REQUEST_DURATION.labels(
                     provider=provider.name, operation="stream"
                 ).time():
-                    async for delta in provider.stream(model_messages):
+                    async for delta in provider.stream(
+                        model_messages, **_model_kwargs(payload.model)
+                    ):
                         full_content += delta
                         yield f"data: {json.dumps({'type': 'chunk', 'delta': delta})}\n\n"
                 full_content = full_content.strip()
@@ -171,6 +228,16 @@ async def chat_stream(
                 )
                 await short_term.append_message(
                     redis, tenant_ctx.tenant_id, conversation.id, "assistant", full_content
+                )
+                _fire_and_forget(
+                    extract_and_store_memories(
+                        tenant_ctx.tenant_id,
+                        tenant_ctx.user_id,
+                        conversation.id,
+                        conversation.title,
+                        payload.message,
+                        full_content,
+                    )
                 )
                 # Streaming responses don't carry a usage payload from most OpenAI-compatible
                 # APIs unless a special option is set — token counts aren't tracked here yet;

@@ -4,6 +4,7 @@ export interface User {
   role: string;
   is_active: boolean;
   totp_enabled: boolean;
+  memory_enabled: boolean;
   created_at: string;
 }
 

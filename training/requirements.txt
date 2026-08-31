@@ -1,0 +1,11 @@
+# unsloth is intentionally NOT pinned here — install it first with plain pip (verified live
+# against Unsloth's current docs): `pip install unsloth`. That pulls in a CUDA-enabled torch
+# build automatically for the common case. (Their PowerShell installer at unsloth.ai/install.ps1
+# is for a separate desktop IDE app "Unsloth Studio" with its own managed environment — not what
+# this project wants; checked its actual contents before running anything, and it's the wrong
+# tool for installing just the Python package into this venv.)
+
+trl>=0.12
+datasets>=3.0
+httpx>=0.27
+python-dotenv>=1.0

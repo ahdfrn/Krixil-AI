@@ -19,8 +19,12 @@ services:
       REDIS_URL: redis://redis:6379/0
       MINIO_ENDPOINT: minio:9000
       OTEL_EXPORTER_ENDPOINT: http://jaeger:4318/v1/traces
+      SANDBOX_RUNNER_URL: http://sandbox-runner:8001
+      WORKSPACE_ROOT: /workspaces
     ports:
       - "8000:8000"
+    volumes:
+      - workspaces:/workspaces
     depends_on:
       postgres:
         condition: service_healthy
@@ -29,6 +33,32 @@ services:
       minio:
         condition: service_healthy
     restart: unless-stopped
+
+  sandbox-runner:
+    build:
+      context: ../../services/sandbox-runner
+      dockerfile: Dockerfile
+    environment:
+      WORKSPACE_ROOT: /workspaces
+    ports:
+      - "8001:8001"
+    volumes:
+      # This is the ONLY service with Docker socket access in this stack — see
+      # docs/architecture/coding-agent.md. Never add this mount to the api service.
+      - /var/run/docker.sock:/var/run/docker.sock
+      - workspaces:/workspaces
+    restart: unless-stopped
+
+  # Not a real running service — profiles: [build-only] keeps it out of `docker compose up`
+  # entirely. Builds the image sandbox-runner's ephemeral run containers actually use
+  # (RUNNER_IMAGE in services/sandbox-runner/app/main.py), separate from sandbox-runner's own
+  # image above. Build/rebuild with: docker compose --profile build-only build sandbox-runner-image
+  sandbox-runner-image:
+    build:
+      context: ../../services/sandbox-runner/runner-image
+      dockerfile: Dockerfile
+    image: krixil-sandbox-python:latest
+    profiles: ["build-only"]
 
   postgres:
     image: pgvector/pgvector:pg16
@@ -122,3 +152,4 @@ volumes:
   minio_data:
   prometheus_data:
   grafana_data:
+  workspaces:

@@ -25,3 +25,12 @@ class Document(UUIDPKMixin, TimestampMixin, Base):
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="processing")
     chunk_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # "upload" | "conversation" — conversation-sourced documents have no real file behind them
+    # (see app/rag/conversation_ingest.py), so storage_key is a sentinel, not a real MinIO key.
+    source: Mapped[str] = mapped_column(String(20), nullable=False, default="upload")
+    # Soft reference, deliberately not a foreign key — the background task that creates
+    # conversation-sourced documents isn't guaranteed by FastAPI to run after the triggering
+    # request's own session has committed the Conversation row (a real FK here hit exactly this
+    # race for app/models/user_memory.py's equivalent field; same fix applied preemptively here).
+    source_conversation_id: Mapped[uuid.UUID | None] = mapped_column(GUID(), nullable=True)

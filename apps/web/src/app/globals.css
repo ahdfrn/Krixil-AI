@@ -53,6 +53,12 @@
    Brand: futuristic / premium / minimal / intelligent — not a saturated, colorful UI. */
 
 :root {
+  /* Tells the browser to render its own native widgets (a <select>'s dropdown popup,
+     scrollbars, date pickers, etc.) in a matching palette — without this, those stayed
+     light-themed regardless of .dark below, since CSS custom properties don't reach into
+     browser-native UI. Caught live: the Code page's real-folder picker opened as a
+     bright white dropdown against Krixil's otherwise all-dark UI. */
+  color-scheme: light;
   --background: oklch(1 0 0);
   --foreground: oklch(0.145 0 0);
   --card: oklch(1 0 0);
@@ -90,6 +96,7 @@
 /* Dark is the default (see ThemeProvider defaultTheme="dark") — this is the primary,
    most-designed-for palette, not an afterthought. */
 .dark {
+  color-scheme: dark;
   --background: oklch(0.13 0 0);
   --foreground: oklch(0.97 0 0);
   --card: oklch(0.17 0 0);

@@ -17,6 +17,27 @@ async def test_agent_completes_without_calling_a_tool(client):
     assert body["final_response"]
 
 
+async def test_completed_agent_run_feeds_the_same_learning_pipeline_as_chat(client):
+    """A completed run (real final_response) is fed to extract_and_store_memories exactly like a
+    chat turn (app/agents/router.py) — MockProvider.generate() just echoes "Mock response to:
+    <prompt>" for the extraction call too, not the {"memories": [...], "notes": [...]} JSON
+    extraction expects, so this only proves the wiring doesn't crash and degrades gracefully to
+    no rows — same limitation test_memory.py's equivalent chat test already accepts; there's no
+    positive-extraction test for chat either to be consistent with."""
+    registered = await register(client)
+    headers = auth_headers(registered["access_token"])
+
+    resp = await client.post(
+        "/api/v1/agents/run", json={"goal": "what's the weather like today?"}, headers=headers
+    )
+    assert resp.status_code == 200
+    assert resp.json()["final_response"]
+
+    list_resp = await client.get("/api/v1/memory", headers=headers)
+    assert list_resp.status_code == 200
+    assert list_resp.json() == []
+
+
 async def test_agent_calls_low_risk_tool_and_completes(client):
     registered = await register(client)
     headers = auth_headers(registered["access_token"])
@@ -104,6 +125,7 @@ async def test_approving_agents_pending_tool_actually_executes_it(client):
         json={"goal": f"please delete document {document_id}"},
         headers=headers,
     )
+    agent_run_id = run_resp.json()["id"]
     execution_id = run_resp.json()["pending_execution_id"]
 
     approve_resp = await client.post(
@@ -114,6 +136,53 @@ async def test_approving_agents_pending_tool_actually_executes_it(client):
 
     list_resp = await client.get("/api/v1/documents", headers=headers)
     assert list_resp.json() == []
+
+    # The run itself must reflect the approval, not stay frozen at "waiting_approval" forever —
+    # real bug, caught live: the Agents page kept showing "Waiting on your approval" indefinitely
+    # even after the tool had genuinely run, because nothing updated the AgentRun/AgentStep rows
+    # once approval happened outside the run loop (a separate request, after the original
+    # /agents/run request had already returned).
+    status_resp = await client.get(f"/api/v1/agents/{agent_run_id}/status", headers=headers)
+    status_body = status_resp.json()
+    assert status_body["status"] == "completed"
+    assert status_body["pending_execution_id"] is None
+    last_step = status_body["steps"][-1]
+    assert last_step["type"] == "observation"
+    assert last_step["content"] == {"deleted": True, "document_id": document_id}
+
+
+async def test_rejecting_agents_pending_tool_marks_the_run_stopped(client):
+    registered = await register(client)
+    headers = auth_headers(registered["access_token"])
+
+    files = {"file": ("notes.txt", b"content that should survive rejection", "text/plain")}
+    upload = await client.post("/api/v1/documents", files=files, headers=headers)
+    document_id = upload.json()["id"]
+
+    run_resp = await client.post(
+        "/api/v1/agents/run",
+        json={"goal": f"please delete document {document_id}"},
+        headers=headers,
+    )
+    agent_run_id = run_resp.json()["id"]
+    execution_id = run_resp.json()["pending_execution_id"]
+
+    reject_resp = await client.post(
+        f"/api/v1/tools/executions/{execution_id}/reject",
+        json={"reason": "not yet"},
+        headers=headers,
+    )
+    assert reject_resp.status_code == 200
+
+    list_resp = await client.get("/api/v1/documents", headers=headers)
+    assert len(list_resp.json()) == 1
+
+    status_resp = await client.get(f"/api/v1/agents/{agent_run_id}/status", headers=headers)
+    status_body = status_resp.json()
+    assert status_body["status"] == "stopped"
+    assert status_body["pending_execution_id"] is None
+    last_step = status_body["steps"][-1]
+    assert last_step["content"] == {"rejected": True, "reason": "not yet"}
 
 
 async def test_agent_handles_a_failed_tool_call_without_crashing(client):
