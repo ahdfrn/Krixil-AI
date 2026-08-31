@@ -1,6 +1,6 @@
 "use client";
 
-import { Bot, Check, Loader2, TriangleAlert, Wrench, X } from "lucide-react";
+import { Bot, Check, Loader2, Search, TriangleAlert, Wrench, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 
@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
+import { cn } from "@/lib/utils";
 import {
   getAgentRunStatus,
   listAgentRuns,
@@ -30,9 +31,37 @@ const STATUS_VARIANT: Record<AgentRunStatus, "secondary" | "outline" | "destruct
   failed: "destructive",
 };
 
+type AgentMode = "quick" | "research";
+
+const MODE_COPY: Record<AgentMode, { label: string; placeholder: string; buttonLabel: string }> = {
+  quick: {
+    label: "What should the agent do?",
+    placeholder: "e.g. Find out how many documents I've uploaded and summarize what they cover.",
+    buttonLabel: "Run agent",
+  },
+  research: {
+    label: "What do you want to research?",
+    placeholder: "e.g. What are the latest developments in solid-state batteries?",
+    buttonLabel: "Research",
+  },
+};
+
+// Wraps a plain research question into a goal that nudges the agent toward the shape Deep
+// Research implies — multiple searches, cross-referenced, written up as a report — using only
+// the existing goal-driven Agent loop and web.search tool. No backend change: this is entirely a
+// framing of the same POST /agents/run this page already calls for "quick" mode.
+function buildResearchGoal(question: string): string {
+  return (
+    "Research the following topic using web search. If one search isn't enough, search again " +
+    "from a different angle and cross-reference what you find. Then write a clear, organized " +
+    `report: a short summary followed by key findings, citing your sources.\n\nTopic: ${question}`
+  );
+}
+
 export default function AgentsPage() {
   const [runs, setRuns] = useState<AgentRunOut[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [mode, setMode] = useState<AgentMode>("quick");
   const [goal, setGoal] = useState("");
   const [isRunning, setIsRunning] = useState(false);
 
@@ -75,7 +104,7 @@ export default function AgentsPage() {
     if (!trimmed) return;
     setIsRunning(true);
     try {
-      const run = await runAgent(trimmed);
+      const run = await runAgent(mode === "research" ? buildResearchGoal(trimmed) : trimmed);
       setRuns((prev) => [run, ...prev]);
       setGoal("");
       void openRun(run.id);
@@ -123,14 +152,35 @@ export default function AgentsPage() {
       <div className="scrollbar-thin flex-1 overflow-y-auto px-4 py-6">
         <div className="mx-auto flex w-full max-w-3xl flex-col gap-6">
           <form onSubmit={handleRun} className="flex flex-col gap-2 rounded-xl border border-border p-4">
-            <label htmlFor="agent-goal" className="text-xs font-medium text-muted-foreground">
-              What should the agent do?
-            </label>
+            <div className="flex items-center justify-between gap-3">
+              <label htmlFor="agent-goal" className="text-xs font-medium text-muted-foreground">
+                {MODE_COPY[mode].label}
+              </label>
+              <div className="flex rounded-md border border-border p-0.5">
+                {(["quick", "research"] as const).map((m) => (
+                  <button
+                    key={m}
+                    type="button"
+                    disabled={isRunning}
+                    onClick={() => setMode(m)}
+                    className={cn(
+                      "flex items-center gap-1 rounded-[5px] px-2 py-1 text-xs font-medium",
+                      mode === m
+                        ? "bg-secondary text-foreground"
+                        : "text-muted-foreground hover:text-foreground",
+                    )}
+                  >
+                    {m === "quick" ? <Bot className="size-3.5" /> : <Search className="size-3.5" />}
+                    {m === "quick" ? "Quick task" : "Deep research"}
+                  </button>
+                ))}
+              </div>
+            </div>
             <Textarea
               id="agent-goal"
               value={goal}
               onChange={(e) => setGoal(e.target.value)}
-              placeholder="e.g. Find out how many documents I've uploaded and summarize what they cover."
+              placeholder={MODE_COPY[mode].placeholder}
               rows={3}
               disabled={isRunning}
             />
@@ -138,11 +188,19 @@ export default function AgentsPage() {
               <p className="text-xs text-muted-foreground">
                 {isRunning
                   ? "Running — this can take up to two minutes."
-                  : "Runs a full planner/executor loop within a fixed step and time budget."}
+                  : mode === "research"
+                    ? "Searches the web (possibly more than once), then writes up a report with sources."
+                    : "Runs a full planner/executor loop within a fixed step and time budget."}
               </p>
               <Button type="submit" size="sm" disabled={isRunning || !goal.trim()} className="shrink-0">
-                {isRunning ? <Loader2 className="size-3.5 animate-spin" /> : <Bot className="size-3.5" />}
-                Run agent
+                {isRunning ? (
+                  <Loader2 className="size-3.5 animate-spin" />
+                ) : mode === "research" ? (
+                  <Search className="size-3.5" />
+                ) : (
+                  <Bot className="size-3.5" />
+                )}
+                {MODE_COPY[mode].buttonLabel}
               </Button>
             </div>
           </form>

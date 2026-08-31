@@ -80,5 +80,10 @@ a time. See [`odysseus-parity.md`](odysseus-parity.md) for the full ordered list
   Verified with genuine live search results (direct API, the Tools page UI, and a real Agent run
   that actually invoked it). Also caught and fixed a real pre-existing bug along the way — see
   `odysseus-parity.md`.
-- Track Phases 2–11 (Deep Research, 2FA, Notes/Tasks, Compare, Calendar, Documents editor, Cookbook,
-  image tools, Email, MCP) are roadmap entries only — not yet designed, see `odysseus-parity.md`.
+- **Track Phase 2 — Deep Research mode** (done): a frontend-only "Deep research" toggle on the
+  Agents page that frames a plain question as a research-shaped goal for the existing, unmodified
+  Agent loop + `web.search` — no backend change needed, as predicted when this track was planned.
+  See `odysseus-parity.md` for what's verified vs. what still needs a real model provider to check
+  (MockProvider's naive tool-matching can't demonstrate it picking `web.search` correctly).
+- Track Phases 3–11 (2FA, Notes/Tasks, Compare, Calendar, Documents editor, Cookbook, image tools,
+  Email, MCP) are roadmap entries only — not yet designed, see `odysseus-parity.md`.

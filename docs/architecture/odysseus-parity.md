@@ -15,10 +15,7 @@ Ordered roughly smallest/most-connected-to-existing-architecture first — only 
 actually designed; the rest are roadmap entries, each gets its own plan when its turn comes:
 
 1. **Web search tool** (done — this doc) — `web.search`, via Tavily.
-2. **Deep Research** — mostly free once (1) exists and has a real key: the Agent loop
-   (`POST /agents/run`) already does iterative tool-calling within a budget, so a research-shaped
-   goal against `web.search` already produces multi-step research today. A dedicated UI affordance
-   (preset goal template, longer budget) is a light follow-up.
+2. **Deep Research** (done — this doc) — a "Deep research" mode on the Agents page.
 3. **2FA** — self-contained auth hardening (TOTP), no external dependency.
 4. **Notes & Tasks** — new CRUD domain, no complex external integration.
 5. **Compare** (side-by-side model testing) — only meaningfully different once a second real model
@@ -95,3 +92,39 @@ matching (`app/tools/base.py`), and it picked `knowledge.search` instead of `web
 goal containing the word "search" (both tool names contain that word). This is a pre-existing
 MockProvider limitation unrelated to this change — with a real model provider instead of mock, real
 reasoning would pick the semantically correct tool. Not fixed here; out of this phase's scope.
+
+## Phase 2: Deep Research mode
+
+**No backend change at all.** As predicted when this track was planned: `POST /agents/run` already
+runs a full iterative tool-calling loop within a budget, and `web.search` already exists (Phase 1)
+— "Deep Research" only needed a frontend affordance that frames a plain question as a
+research-shaped goal before sending it through the exact same, unmodified `runAgent()` call the
+"Quick task" mode already used.
+
+**`apps/web/src/app/(dashboard)/agents/page.tsx`**: added a `mode: "quick" | "research"` toggle
+(two small buttons above the goal textarea, not a new page/route — everything else on this page,
+including the run list and detail dialog, is shared and untouched). Research mode changes the
+label/placeholder copy and, on submit, wraps the raw question via `buildResearchGoal()`:
+
+> Research the following topic using web search. If one search isn't enough, search again from a
+> different angle and cross-reference what you find. Then write a clear, organized report: a short
+> summary followed by key findings, citing your sources.
+>
+> Topic: `{question}`
+
+### Verified live (2026-08-31)
+
+`npm run lint` / `npm run build` clean. Live: confirmed the toggle actually changes the
+label/placeholder/button copy, confirmed the *wrapped* goal (not the raw question) is what actually
+gets sent and stored — visible verbatim in the run's detail dialog — and confirmed switching back
+to Quick task mode is unaffected. Zero console/page errors.
+
+Also ran a real research goal through the whole flow with the real Tavily key from Phase 1 already
+configured. It completed cleanly, but — exactly as flagged before running it — `MockProvider`
+called `knowledge.search` rather than `web.search` (the same naive-keyword-matching /
+alphabetical-tie-break limitation noted above; both tool names contain "search," and
+`knowledge.search` sorts first). This isn't a defect in Deep Research mode itself — the toggle, the
+goal-wrapping, and the full run lifecycle all worked exactly as designed — it's a ceiling on what's
+demonstrable under `MODEL_PROVIDER=mock` specifically. A real model provider's actual reasoning
+(rather than substring matching) would correctly choose `web.search` for a research-shaped goal;
+that path is not yet verified and needs a real `OPENAI_API_KEY` (or another real provider) to check.
