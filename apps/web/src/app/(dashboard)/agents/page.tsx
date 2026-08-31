@@ -227,7 +227,9 @@ function RunDetail({
 
       <div className="scrollbar-thin flex max-h-[60vh] flex-col gap-2 overflow-y-auto">
         {run.steps.map((step) => (
-          <StepView key={step.step_number} step={step} />
+          // step_number is the loop iteration, not a unique row id — a tool_call and its
+          // observation share one iteration's number, so the pair needs to be part of the key.
+          <StepView key={`${step.step_number}-${step.type}`} step={step} />
         ))}
 
         {run.status === "waiting_approval" && run.pending_execution_id && (

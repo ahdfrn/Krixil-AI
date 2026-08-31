@@ -66,7 +66,32 @@ exact `TAVILY_API_KEY` message in both a toast and the execution history — the
 verification bar as every other phase in this project, applied to the only path actually
 verifiable today. Zero console/page errors.
 
-**Not yet verified**: a real search actually returning live results. The user doesn't have a
-Tavily key yet — once they register for one (free tier, no card required) and set
-`TAVILY_API_KEY` in `.env` + rebuild the `api` container, this needs a follow-up live check before
-being considered fully done, not just assumed to work because the mocked test passed.
+## Real key verified (2026-08-31, same day)
+
+The user provided a real Tavily key shortly after. Set in `services/ai-service/.env` (gitignored,
+confirmed via `git check-ignore` before touching it — never went near git), `api` container
+rebuilt. Verified for real, not mocked:
+- Direct API call (`POST /tools/web.search/execute`, `"what is the capital of France"`) returned
+  genuine live results — 3 real sources with real URLs/content/scores, plus a synthesized `answer`
+  ("The capital of France is Paris...").
+- Same real search run through the actual Tools page UI, execution showed `Completed` with real
+  result content, not just the earlier `Failed`/no-key path.
+- Ran a real Agent goal ("Search the web for who won the most recent Nobel Prize in Physics...")
+  end to end — confirmed the whole loop (`POST /agents/run` → tool call → observation →
+  final_response) completes with a real tool invocation in the trace.
+
+**A real bug the Agent-run verification caught**: `apps/web/src/app/(dashboard)/agents/page.tsx`
+keyed each step in the trace by `step.step_number` alone — React logged a duplicate-key warning
+because the backend's `step_number` deliberately identifies the *loop iteration*, not a unique row
+(`app/agents/runner.py`: a `tool_call` and its resulting `observation` are recorded as two separate
+`AgentStep` rows sharing one iteration's `step_number` — correct, intentional backend behavior, not
+a bug there). Fixed by keying on `${step.step_number}-${step.type}` instead, which is genuinely
+unique given the backend's actual data shape. Pre-existing since Web Phase 3, just never triggered
+by prior verification because those didn't happen to produce a tool_call step to pair with an
+observation in the same recorded run. Re-verified clean after the fix — no console errors.
+
+**Separately, worth knowing but not a bug**: `MockProvider`'s tool-selection is naive keyword
+matching (`app/tools/base.py`), and it picked `knowledge.search` instead of `web.search` for a
+goal containing the word "search" (both tool names contain that word). This is a pre-existing
+MockProvider limitation unrelated to this change — with a real model provider instead of mock, real
+reasoning would pick the semantically correct tool. Not fixed here; out of this phase's scope.
