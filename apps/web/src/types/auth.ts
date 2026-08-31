@@ -3,6 +3,7 @@ export interface User {
   email: string;
   role: string;
   is_active: boolean;
+  totp_enabled: boolean;
   created_at: string;
 }
 
@@ -31,4 +32,5 @@ export interface LoginInput {
   tenant_slug: string;
   email: string;
   password: string;
+  totp_code?: string;
 }

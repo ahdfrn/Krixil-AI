@@ -16,7 +16,7 @@ actually designed; the rest are roadmap entries, each gets its own plan when its
 
 1. **Web search tool** (done — this doc) — `web.search`, via Tavily.
 2. **Deep Research** (done — this doc) — a "Deep research" mode on the Agents page.
-3. **2FA** — self-contained auth hardening (TOTP), no external dependency.
+3. **2FA** (done — this doc) — self-contained TOTP, no external dependency.
 4. **Notes & Tasks** — new CRUD domain, no complex external integration.
 5. **Compare** (side-by-side model testing) — only meaningfully different once a second real model
    exists in the catalog (see `phase1.md`'s 2026-08-30 model-listing addendum).
@@ -128,3 +128,59 @@ goal-wrapping, and the full run lifecycle all worked exactly as designed — it'
 demonstrable under `MODEL_PROVIDER=mock` specifically. A real model provider's actual reasoning
 (rather than substring matching) would correctly choose `web.search` for a research-shaped goal;
 that path is not yet verified and needs a real `OPENAI_API_KEY` (or another real provider) to check.
+
+## Phase 3: 2FA (TOTP)
+
+Standard RFC 6238 TOTP, `pyotp` on the backend (pure algorithm, no network calls — genuinely local,
+matching the user's original "no third-party subscription" goal more directly than even the search
+tool did). QR code rendering happens client-side from the `otpauth://` URI the backend returns
+(`qrcode` npm package) — no server-side image generation dependency.
+
+**Schema** (migration `0007_totp`, applied against the real running Postgres, not just SQLite in
+tests): `users.totp_secret` (set as soon as setup starts, before confirmation) and
+`users.totp_enabled` (only flips true once the user proves possession with a real code — standard
+practice, matches how the rest of this project treats "provisioned but not yet proven" state).
+
+**Three new endpoints** (`app/auth/router.py`, all behind the existing `get_current_user`
+dependency, no new auth plumbing needed): `POST /auth/2fa/setup`, `POST /auth/2fa/confirm`
+(`{code}`, ±30s clock-skew tolerance via `valid_window=1`), `POST /auth/2fa/disable` (`{code}` —
+requires a currently-valid code, not just an active session, same reasoning as requiring a password
+to change a password). **Login flow**: `LoginRequest` gets an optional `totp_code`; if the account
+has 2FA on and it's missing, `401 "2FA code required"`; if present but wrong, `401 "Invalid 2FA
+code"` — the frontend distinguishes these by matching the exact detail string (this app's existing
+plain-string error convention, not a new structured error-code system).
+
+**Frontend**: `apps/web/src/app/login/page.tsx` reveals a code field on the specific "2FA code
+required" response rather than showing it as an error (the password was correct — this is an
+expected next step, not a failure). `apps/web/.../settings/page.tsx`'s **Security tab** — previously
+a placeholder, now real like every other now-real tab — is the enable/disable UI: QR code + raw
+secret fallback + confirm-code field to enable, a confirm dialog requiring a current code to
+disable. `useAuthStore` gained `updateUser(patch)` since there's no `/me` endpoint to refetch a
+fresh session from after a status-only response (same constraint documented in `web-phase2.md`).
+
+### A real bug this caught: the offline test suite was making live network calls
+
+Running the full `pytest` suite after adding the real Tavily key to `.env` (for Phase 1/2's live
+verification) revealed `test_web_search_without_key_fails_with_clear_message` was actually
+**succeeding against the real Tavily API** instead of hitting the expected no-key failure path —
+`Settings(env_file=".env")` only falls back to the file for anything not already in `os.environ`,
+and the test process's `get_settings()` was reading the same real `.env` a developer's live dev
+session uses, with no isolation. Fixed in `tests/conftest.py`: `os.environ.setdefault
+("TAVILY_API_KEY", "")` and `os.environ.setdefault("MODEL_PROVIDER", "mock")` alongside the
+existing `OTEL_ENABLED` override, forcing the same hermetic-regardless-of-local-.env guarantee for
+any future secret added there. Not caused by this phase's changes, but only surfaced because this
+was the first full-suite run since that real key was added.
+
+### Verified live (2026-08-31)
+
+`pytest` 97/97 (+6 new 2FA tests, using `pyotp.TOTP(secret).now()` for real codes, never a
+hardcoded one), `ruff`, `mypy` clean. `alembic upgrade head` applied cleanly against the real
+running Postgres. `npm run lint` / `npm run build` clean. Live, full real round-trip with genuinely
+computed TOTP codes (a from-scratch RFC 6238 implementation in the verification script itself,
+cross-checked against `pyotp` at fixed timestamps before trusting it — not a shortcut, not a
+fabricated code): register → enable 2FA (real QR code renders, real secret) → confirm with a
+computed code → sign out → log back in, confirm the code-required step appears after a correct
+password → submit a computed code → succeeds → disable with another computed code → confirm a
+subsequent login no longer asks for one. Zero unexpected console/page errors (the one 401 logged
+is the expected response from deliberately submitting without a code first — that's what triggers
+revealing the code field, not a bug).

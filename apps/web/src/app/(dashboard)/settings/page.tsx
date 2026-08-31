@@ -1,12 +1,26 @@
 "use client";
 
-import { Monitor, Moon, Sun } from "lucide-react";
+import { Monitor, Moon, ShieldCheck, ShieldOff, Sun } from "lucide-react";
 import { useTheme } from "next-themes";
+import QRCode from "qrcode";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 
+import {
+  AlertDialog,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { confirm2FA, disable2FA, setup2FA, type TotpSetup } from "@/lib/api/auth";
 import { ApiError } from "@/lib/api/client";
 import { executeTool } from "@/lib/api/tools";
 import { cn } from "@/lib/utils";
@@ -26,7 +40,7 @@ const SECTIONS = [
 ] as const;
 
 const PLACEHOLDER_SECTIONS = SECTIONS.filter(
-  (s) => s !== "Appearance" && s !== "Account" && s !== "Usage",
+  (s) => s !== "Appearance" && s !== "Account" && s !== "Usage" && s !== "Security",
 );
 
 const THEME_OPTIONS = [
@@ -137,6 +151,10 @@ export default function SettingsPage() {
             </div>
           </TabsContent>
 
+          <TabsContent value="Security" className="space-y-4">
+            <SecurityTab />
+          </TabsContent>
+
           <TabsContent value="Usage" className="space-y-4">
             <div className="rounded-xl border border-border p-4">
               <h2 className="text-sm font-medium">Usage — last 30 days</h2>
@@ -193,6 +211,199 @@ function UsageStat({ label, value }: { label: string; value: number }) {
     <div className="rounded-lg border border-border p-3">
       <p className="text-lg font-semibold">{value.toLocaleString()}</p>
       <p className="text-xs text-muted-foreground">{label}</p>
+    </div>
+  );
+}
+
+function SecurityTab() {
+  const user = useAuthStore((s) => s.user);
+  const updateUser = useAuthStore((s) => s.updateUser);
+
+  const [setupData, setSetupData] = useState<TotpSetup | null>(null);
+  const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
+  const [confirmCode, setConfirmCode] = useState("");
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [disableOpen, setDisableOpen] = useState(false);
+  const [disableCode, setDisableCode] = useState("");
+
+  useEffect(() => {
+    // Nothing renders qrDataUrl while setupData is null, so there's no need to clear it eagerly
+    // here — the next setup attempt overwrites it before it could ever be shown stale.
+    if (!setupData) return;
+    let cancelled = false;
+    QRCode.toDataURL(setupData.otpauth_url).then((url) => {
+      if (!cancelled) setQrDataUrl(url);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [setupData]);
+
+  async function handleStartSetup() {
+    setIsSubmitting(true);
+    try {
+      setSetupData(await setup2FA());
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : "Couldn't start 2FA setup.");
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
+
+  async function handleConfirm(e: React.FormEvent) {
+    e.preventDefault();
+    setIsSubmitting(true);
+    try {
+      await confirm2FA(confirmCode.trim());
+      updateUser({ totp_enabled: true });
+      setSetupData(null);
+      setConfirmCode("");
+      toast.success("Two-factor authentication is on.");
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : "That code didn't work — try again.");
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
+
+  async function handleDisable(e: React.FormEvent) {
+    e.preventDefault();
+    setIsSubmitting(true);
+    try {
+      await disable2FA(disableCode.trim());
+      updateUser({ totp_enabled: false });
+      setDisableOpen(false);
+      setDisableCode("");
+      toast.success("Two-factor authentication is off.");
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : "That code didn't work — try again.");
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
+
+  return (
+    <div className="rounded-xl border border-border p-4">
+      <h2 className="text-sm font-medium">Two-factor authentication</h2>
+      <p className="mt-1 text-xs text-muted-foreground">
+        Require a code from an authenticator app (Google Authenticator, Authy, 1Password, etc.) in
+        addition to your password when logging in.
+      </p>
+
+      {!setupData && (
+        <div className="mt-4 flex items-center gap-3 rounded-lg border border-border p-3">
+          {user?.totp_enabled ? (
+            <ShieldCheck className="size-5 shrink-0 text-primary" />
+          ) : (
+            <ShieldOff className="size-5 shrink-0 text-muted-foreground" />
+          )}
+          <div className="flex-1">
+            <p className="text-sm font-medium">
+              {user?.totp_enabled ? "Enabled" : "Not enabled"}
+            </p>
+            <p className="text-xs text-muted-foreground">
+              {user?.totp_enabled
+                ? "Your account requires a code at login."
+                : "Your account only requires a password at login."}
+            </p>
+          </div>
+          {user?.totp_enabled ? (
+            <Button size="sm" variant="destructive" onClick={() => setDisableOpen(true)}>
+              Disable
+            </Button>
+          ) : (
+            <Button size="sm" onClick={handleStartSetup} disabled={isSubmitting}>
+              Enable 2FA
+            </Button>
+          )}
+        </div>
+      )}
+
+      {setupData && (
+        <div className="mt-4 flex flex-col gap-4 rounded-lg border border-border p-4">
+          <div className="flex flex-col items-center gap-3 sm:flex-row sm:items-start">
+            {qrDataUrl && (
+              // Locally-generated data URL, not a remote image — next/image's optimizer doesn't apply.
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                src={qrDataUrl}
+                alt="Scan this QR code with your authenticator app"
+                className="size-40 shrink-0 rounded-lg border border-border bg-white p-2"
+              />
+            )}
+            <div className="flex min-w-0 flex-col gap-1">
+              <p className="text-xs text-muted-foreground">
+                Scan with your authenticator app, or enter this code manually:
+              </p>
+              <code className="break-all rounded-md bg-secondary px-2 py-1 text-xs">
+                {setupData.secret}
+              </code>
+            </div>
+          </div>
+
+          <form onSubmit={handleConfirm} className="flex items-end gap-2">
+            <div className="flex flex-1 flex-col gap-1.5">
+              <Label htmlFor="totp-confirm" className="text-xs">
+                Enter the 6-digit code to confirm
+              </Label>
+              <Input
+                id="totp-confirm"
+                inputMode="numeric"
+                maxLength={6}
+                value={confirmCode}
+                onChange={(e) => setConfirmCode(e.target.value)}
+                placeholder="123456"
+                required
+              />
+            </div>
+            <Button type="submit" size="sm" disabled={isSubmitting}>
+              Confirm
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              onClick={() => {
+                setSetupData(null);
+                setConfirmCode("");
+              }}
+            >
+              Cancel
+            </Button>
+          </form>
+        </div>
+      )}
+
+      <AlertDialog open={disableOpen} onOpenChange={setDisableOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Disable two-factor authentication?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Enter a current code from your authenticator app to confirm.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <form onSubmit={handleDisable} className="flex flex-col gap-3">
+            <Input
+              inputMode="numeric"
+              maxLength={6}
+              value={disableCode}
+              onChange={(e) => setDisableCode(e.target.value)}
+              placeholder="123456"
+              autoFocus
+              required
+            />
+            <AlertDialogFooter>
+              <AlertDialogCancel type="button">Cancel</AlertDialogCancel>
+              {/* Not AlertDialogAction: it auto-closes on click regardless of outcome, but this
+                  needs to stay open on a wrong code so the user can retry — handleDisable closes
+                  it explicitly, only on success. */}
+              <Button type="submit" variant="destructive" disabled={isSubmitting}>
+                Disable
+              </Button>
+            </AlertDialogFooter>
+          </form>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

@@ -12,6 +12,9 @@ interface AuthState {
   hasHydrated: boolean;
   isAuthenticated: () => boolean;
   setSession: (session: AuthSession) => void;
+  /** Patches the current user in place — e.g. after enabling/disabling 2FA, which returns just
+   * the new status, not a full new session (there's no /me endpoint to refetch from). */
+  updateUser: (patch: Partial<User>) => void;
   logout: () => void;
   setHasHydrated: (hydrated: boolean) => void;
 }
@@ -32,6 +35,8 @@ export const useAuthStore = create<AuthState>()(
           accessToken: session.access_token,
           lastTenantSlug: session.tenant.slug,
         }),
+      updateUser: (patch) =>
+        set((state) => ({ user: state.user ? { ...state.user, ...patch } : state.user })),
       logout: () => set({ user: null, tenant: null, accessToken: null }),
       setHasHydrated: (hydrated) => set({ hasHydrated: hydrated }),
     }),

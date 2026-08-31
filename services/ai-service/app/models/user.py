@@ -27,3 +27,8 @@ class User(UUIDPKMixin, TimestampMixin, Base):
         GUID(), ForeignKey("roles.id", ondelete="RESTRICT"), nullable=False
     )
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+
+    # totp_secret is set as soon as 2FA setup starts, before it's confirmed — totp_enabled only
+    # flips true once the user proves possession with a real code (POST /auth/2fa/confirm).
+    totp_secret: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    totp_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)

@@ -85,5 +85,10 @@ a time. See [`odysseus-parity.md`](odysseus-parity.md) for the full ordered list
   Agent loop + `web.search` — no backend change needed, as predicted when this track was planned.
   See `odysseus-parity.md` for what's verified vs. what still needs a real model provider to check
   (MockProvider's naive tool-matching can't demonstrate it picking `web.search` correctly).
-- Track Phases 3–11 (2FA, Notes/Tasks, Compare, Calendar, Documents editor, Cookbook, image tools,
+- **Track Phase 3 — 2FA (TOTP)** (done): a real, self-contained TOTP implementation (`pyotp` on
+  the backend, client-side QR rendering, no third-party service) — setup/confirm/disable endpoints,
+  a login-flow change, migration `0007_totp` applied against the real running Postgres, and a real
+  Settings → Security tab. Also fixed a real bug the full test suite run surfaced: the offline
+  tests weren't isolated from the local `.env`'s real Tavily key. See `odysseus-parity.md`.
+- Track Phases 4–11 (Notes/Tasks, Compare, Calendar, Documents editor, Cookbook, image tools,
   Email, MCP) are roadmap entries only — not yet designed, see `odysseus-parity.md`.

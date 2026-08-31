@@ -1,9 +1,14 @@
 import os
 
-# Must be set before `from app.main import app` below — tracing is configured at import time.
-# No collector is running in the offline suite; leaving it on just adds a background export
-# thread that logs harmless-but-noisy connection errors as the test process exits.
+# Must be set before `from app.main import app` below — Settings() reads .env at import time, and
+# a real local .env (e.g. a real TAVILY_API_KEY, added for live dev use) must never leak into the
+# offline suite: Settings(env_file=".env") only falls back to the file for anything not already in
+# os.environ, so setting these here first makes the suite hermetic regardless of what a developer's
+# own .env happens to contain. Caught for real: test_tools.py's "no key configured" test started
+# making genuine network calls to api.tavily.com once a real key existed in .env.
 os.environ.setdefault("OTEL_ENABLED", "false")
+os.environ.setdefault("TAVILY_API_KEY", "")
+os.environ.setdefault("MODEL_PROVIDER", "mock")
 
 import fakeredis.aioredis
 import pytest

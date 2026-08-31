@@ -11,6 +11,7 @@ passlib==1.7.4
 # Pinned below 4.1: passlib 1.7.4 (last release, unmaintained) probes bcrypt.__about__,
 # which bcrypt>=4.1 removed — pinning avoids that warning/detection failure entirely.
 bcrypt==4.0.1
+pyotp==2.9.0
 python-jose[cryptography]==3.5.0
 redis==5.2.0
 structlog==24.4.0

@@ -14,6 +14,7 @@ class LoginRequest(BaseModel):
     tenant_slug: str = Field(min_length=1, max_length=255)
     email: EmailStr
     password: str = Field(min_length=1, max_length=128)
+    totp_code: str | None = Field(default=None, min_length=6, max_length=6)
 
 
 class UserOut(BaseModel):
@@ -21,9 +22,23 @@ class UserOut(BaseModel):
     email: str
     role: str
     is_active: bool
+    totp_enabled: bool
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class TotpSetupOut(BaseModel):
+    secret: str
+    otpauth_url: str
+
+
+class TotpCodeRequest(BaseModel):
+    code: str = Field(min_length=6, max_length=6)
+
+
+class TotpStatusOut(BaseModel):
+    totp_enabled: bool
 
 
 class TenantOut(BaseModel):
