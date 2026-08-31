@@ -69,6 +69,10 @@ class Settings(BaseSettings):
     otel_enabled: bool = True
     otel_exporter_endpoint: str = "http://localhost:4318/v1/traces"
 
+    # Empty by default — the web.search tool (app/tools/web_tools.py) fails with a clear,
+    # non-fabricated error when this is unset rather than pretending to search anything.
+    tavily_api_key: str = ""
+
     @property
     def sqlalchemy_database_url(self) -> str:
         if self.database_url:

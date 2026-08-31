@@ -68,3 +68,17 @@ numbers above.
   before), and conservative security headers. See `web-phase5.md` for what was audited, what was
   found, and what's deliberately still deferred (CSP, actual scaling work — no deploy target
   exists on either side yet).
+
+## Odysseus feature-parity track — new, ongoing (started 2026-08-31)
+
+A separate, open-ended multi-phase track (own numbering, not backend or web phases) working toward
+matching [Odysseus](https://github.com/odysseus-dev/odysseus)'s feature set, one real capability at
+a time. See [`odysseus-parity.md`](odysseus-parity.md) for the full ordered list and design detail.
+
+- **Track Phase 1 — `web.search` tool** (done, real search pending the user's API key): a real
+  Tavily-backed web search Tool, registered like any other tool in the existing Tool System. Built
+  and live-verified completely except the actual "returns real results" path, which needs a
+  `TAVILY_API_KEY` the user hasn't obtained yet — same honest, not-silently-assumed pattern as
+  every unconfigured-integration case elsewhere in this project.
+- Track Phases 2–11 (Deep Research, 2FA, Notes/Tasks, Compare, Calendar, Documents editor, Cookbook,
+  image tools, Email, MCP) are roadmap entries only — not yet designed, see `odysseus-parity.md`.

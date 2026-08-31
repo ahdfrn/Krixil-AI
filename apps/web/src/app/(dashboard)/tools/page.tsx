@@ -49,6 +49,11 @@ function summarizeOutput(toolName: string, output: Record<string, unknown> | nul
   if (toolName === "document.delete") {
     return `Deleted document ${output.document_id}`;
   }
+  if (toolName === "web.search") {
+    const results = output.results as unknown[] | undefined;
+    const count = `${results?.length ?? 0} result${results?.length === 1 ? "" : "s"} found`;
+    return output.answer ? `${count} — ${output.answer}` : count;
+  }
   return JSON.stringify(output);
 }
 
@@ -289,6 +294,28 @@ function ToolForm({
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder="Search query..."
+          className="flex-1"
+        />
+        <Button type="submit" size="sm" disabled={isRunning || !query.trim()}>
+          {isRunning ? <Loader2 className="size-3.5 animate-spin" /> : "Run"}
+        </Button>
+      </form>
+    );
+  }
+
+  if (tool.name === "web.search") {
+    return (
+      <form
+        className="flex gap-2"
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (query.trim()) onRun({ query: query.trim() });
+        }}
+      >
+        <Input
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="What do you want to know?"
           className="flex-1"
         />
         <Button type="submit" size="sm" disabled={isRunning || !query.trim()}>

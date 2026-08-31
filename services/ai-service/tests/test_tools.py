@@ -1,5 +1,9 @@
 import uuid
 
+import httpx
+import respx
+
+from app.core.config import Settings
 from app.models.role import Role
 from app.models.user import User
 from tests.helpers import auth_headers, register
@@ -12,7 +16,67 @@ async def test_list_tools_returns_registered_tools(client):
     resp = await client.get("/api/v1/tools", headers=headers)
     assert resp.status_code == 200
     names = {t["name"] for t in resp.json()}
-    assert names == {"knowledge.search", "usage.get_summary", "document.delete"}
+    assert names == {"knowledge.search", "usage.get_summary", "document.delete", "web.search"}
+
+
+async def test_web_search_without_key_fails_with_clear_message(client):
+    # No TAVILY_API_KEY configured in the test environment by default — this must fail cleanly,
+    # not silently pretend to search anything.
+    registered = await register(client)
+    headers = auth_headers(registered["access_token"])
+
+    resp = await client.post(
+        "/api/v1/tools/web.search/execute", json={"query": "krixil ai"}, headers=headers
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "failed"
+    assert "TAVILY_API_KEY" in body["error_message"]
+
+
+async def test_web_search_with_key_returns_trimmed_results(client, monkeypatch):
+    monkeypatch.setattr(
+        "app.tools.web_tools.get_settings", lambda: Settings(tavily_api_key="test-key")
+    )
+    registered = await register(client)
+    headers = auth_headers(registered["access_token"])
+
+    with respx.mock(assert_all_called=True) as mock:
+        mock.post("https://api.tavily.com/search").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "query": "krixil ai",
+                    "answer": "Krixil AI is a self-hosted AI platform.",
+                    "results": [
+                        {
+                            "title": "Krixil AI",
+                            "url": "https://example.com/krixil",
+                            "content": "Krixil AI is a self-hosted, multi-tenant AI platform.",
+                            "score": 0.95,
+                            "raw_content": None,
+                        }
+                    ],
+                    "response_time": 0.4,
+                },
+            )
+        )
+        resp = await client.post(
+            "/api/v1/tools/web.search/execute", json={"query": "krixil ai"}, headers=headers
+        )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "completed"
+    assert body["output"]["answer"] == "Krixil AI is a self-hosted AI platform."
+    assert body["output"]["results"] == [
+        {
+            "title": "Krixil AI",
+            "url": "https://example.com/krixil",
+            "content": "Krixil AI is a self-hosted, multi-tenant AI platform.",
+            "score": 0.95,
+        }
+    ]
 
 
 async def test_low_risk_tool_executes_immediately(client):
