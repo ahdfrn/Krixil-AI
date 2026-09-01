@@ -19,6 +19,7 @@ from app.fs import (  # noqa: E402  (must follow load_dotenv() — fs.py reads o
     list_files,
     read_file,
     resolve_host_path,
+    search_files,
     write_file,
 )
 
@@ -53,6 +54,12 @@ class RunResult(BaseModel):
     stderr: str
     exit_code: int
     timed_out: bool
+
+
+class SearchResultOut(BaseModel):
+    path: str
+    line_number: int
+    line: str
 
 
 @app.get("/health")
@@ -99,6 +106,16 @@ async def remove_file(path: str) -> None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail=f"'{path}' is a directory"
         ) from exc
+
+
+@app.get("/search", response_model=list[SearchResultOut])
+async def get_search(pattern: str, path: str = ".") -> list[SearchResultOut]:
+    try:
+        return [SearchResultOut(**r) for r in search_files(pattern, path)]
+    except HostPathError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
 
 @app.post("/run", response_model=RunResult)

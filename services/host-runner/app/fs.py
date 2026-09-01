@@ -6,9 +6,16 @@ left, since everything inside HOST_ROOT is otherwise fully readable/writable/exe
 approval step. See docs/architecture/coding-agent.md ("Real host-folder access")."""
 
 import os
+import re
 from pathlib import Path
 
 MAX_READ_BYTES = 1_000_000
+MAX_SEARCH_RESULTS = 200
+# A file this large is almost certainly not something a code search cares about (a bundled
+# asset, a data dump, a lockfile) — skipped rather than read in full, same spirit as
+# MAX_READ_BYTES above but scoped to search instead of erroring the whole request out.
+MAX_SEARCH_FILE_BYTES = 2_000_000
+SEARCH_IGNORED_DIR_NAMES = {"node_modules", "__pycache__", "venv", "dist", "build", ".next"}
 
 
 class HostPathError(ValueError):
@@ -72,3 +79,48 @@ def delete_file(relative_path: str) -> None:
     if target.is_dir():
         raise IsADirectoryError(relative_path)
     target.unlink(missing_ok=True)
+
+
+def search_files(pattern: str, relative_dir: str = ".") -> list[dict]:
+    """Real recursive regex search, not a shell-out to ripgrep — this service otherwise has zero
+    external binary dependencies (list/read/write/run are all stdlib), and a search tool an agent
+    calls mid-run shouldn't start failing just because `rg` isn't on this particular machine's
+    PATH (a real, previously-hit problem — see docs/architecture/coding-agent.md's `kirxil
+    search` history). Caps results at MAX_SEARCH_RESULTS so one broad pattern over a huge tree
+    can't return an unbounded response; skips files it can't decode as UTF-8 text (binary,
+    basically) rather than erroring, and common dependency/build directories rather than walking
+    into them at all."""
+    root = host_root()
+    target = resolve_host_path(relative_dir)
+    try:
+        regex = re.compile(pattern)
+    except re.error as exc:
+        raise ValueError(f"Invalid search pattern: {exc}") from exc
+
+    results: list[dict] = []
+    for dirpath, dirnames, filenames in os.walk(target):
+        dirnames[:] = [
+            d for d in dirnames if d not in SEARCH_IGNORED_DIR_NAMES and not d.startswith(".")
+        ]
+        for filename in sorted(filenames):
+            file_path = Path(dirpath) / filename
+            try:
+                if file_path.stat().st_size > MAX_SEARCH_FILE_BYTES:
+                    continue
+                text = file_path.read_text(encoding="utf-8", errors="strict")
+            except (OSError, UnicodeDecodeError):
+                # Unreadable, or not valid UTF-8 text (the practical definition of "binary" used
+                # here) — skip rather than fail the whole search over one file.
+                continue
+            for line_number, line in enumerate(text.splitlines(), start=1):
+                if regex.search(line):
+                    results.append(
+                        {
+                            "path": str(file_path.relative_to(root)).replace("\\", "/"),
+                            "line_number": line_number,
+                            "line": line.strip()[:300],
+                        }
+                    )
+                    if len(results) >= MAX_SEARCH_RESULTS:
+                        return results
+    return results
