@@ -90,3 +90,35 @@ export async function resetToBeforeCheckpoint(cwd: string, checkpointHash: strin
   const result = await execa("git", ["reset", "--hard", parent.ref], { cwd, reject: false });
   return result.failed ? { ok: false, reason: result.stderr || "git reset failed." } : { ok: true };
 }
+
+export interface ChangeSummary {
+  filesChanged: number;
+  insertions: number;
+  deletions: number;
+}
+
+/** Parses real `git diff --shortstat` output ("2 files changed, 14 insertions(+), 3
+ * deletions(-)") into numbers — a pure function so the parsing itself is unit-testable without
+ * shelling out to git. Any field git omitted (nothing added, nothing removed, etc.) is 0, not
+ * missing — git only prints the parts that apply. */
+export function parseShortstat(text: string): ChangeSummary {
+  const filesMatch = /(\d+) files? changed/.exec(text);
+  const insMatch = /(\d+) insertions?\(\+\)/.exec(text);
+  const delMatch = /(\d+) deletions?\(-\)/.exec(text);
+  return {
+    filesChanged: filesMatch ? Number(filesMatch[1]) : 0,
+    insertions: insMatch ? Number(insMatch[1]) : 0,
+    deletions: delMatch ? Number(delMatch[1]) : 0,
+  };
+}
+
+/** Real insertions/deletions in the current working tree against HEAD (tracked files only, same
+ * as plain `git diff` — untracked new files aren't counted, matching git's own convention) — used
+ * by the status bar for a real "+N/-M" figure. All-zero (not an error) outside a git repo, with
+ * no commits yet, or on a clean tree — this is a display nicety, never something that should
+ * block anything. */
+export async function workingTreeChangeSummary(cwd: string): Promise<ChangeSummary> {
+  if (!(await isGitRepo(cwd))) return { filesChanged: 0, insertions: 0, deletions: 0 };
+  const result = await execa("git", ["diff", "--shortstat", "HEAD"], { cwd, reject: false });
+  return parseShortstat(result.stdout);
+}

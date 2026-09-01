@@ -45,37 +45,51 @@ kirxil
 ```
 
 ```
-╭────────────────────────────────╮
-│            KIRXIL AI            │
-│   Autonomous Software Engineer  │
-╰────────────────────────────────╯
+╭ KIRXIL AI ────────────────────────────────╮
+│                             ● online       │
+╰─────────────────────────────────────────────╯
 Project: some-real-project
 Branch: main
 Model: auto
+128 files, 14 folders here
+Working in . under D:\. /model to switch, /cwd for folder, /exit to quit.
 
 kirxil > fix the bug where it crashes on empty input
 
 ⏺ Read(app.py)
   ⎿ Read 42 lines
-⏺ Write(app.py)
-  ⎿ Saved
+⏺ Edit(app.py)
+  ⎿ Edited (+3/-1)
+     - if not values:
+     + if not values:
+     +     return None
+     + # guard the empty-input case
 ⏺ Bash(pytest -q)
   ⎿ Paused for approval
 
-⏸ Bash(pytest -q)
-  HIGH risk — approve to run it for real, or reject to stop this goal.
-Approve? [y/N] y
+┌ ⏸ Bash(pytest -q) ──────────────────────────┐
+│ Risk: HIGH                                   │
+│ HIGH risk — approve to run it for real, or   │
+│ reject to stop this goal.                    │
+│ Press y to approve, n to reject.             │
+└───────────────────────────────────────────────┘
+y
 
   ⎿ Exit 0
      3 passed in 0.41s
 
 Fixed — the empty-input case now returns early instead of indexing into an empty list.
+
+┌ 1 tool call · +3/-1 ──────────────────────────┐ /help /model /cwd /undo /exit
 ```
 
 Requires a real terminal (raw-mode stdin, for `Ctrl+C`-to-cancel) — piped/redirected input prints
 a clear message and exits rather than crashing. `Ctrl+C` stops a run in progress the same way the
 web app's "esc to interrupt" does; `/model [id]` lists or switches models, `/cwd` shows the current
-folder, `/undo` reverts to the last checkpoint, `/exit` quits.
+folder, `/plan <goal>` shows a read-only plan in a bordered panel with a real handoff into
+`kirxil build`, `/undo` reverts to the last checkpoint, `/exit` quits. A persistent status bar at
+the bottom shows the real tool-call count, real test-attempt count (if any), and real
+`git diff --stat`-derived change stats for the run in progress.
 
 ### Command surface (PRD §33)
 
@@ -100,11 +114,15 @@ kirxil build "add a rate limiter middleware, tests included"  # PRD §20 — Pla
 The five read-only ones (`ask`, `explain`, `analyze`, `review`, `plan`) tell the model explicitly
 not to create, edit, or delete anything — real instruction text, not a separate enforcement
 mechanism, so it's asking the model to behave, not guaranteeing it (same trust model as every
-other goal). `kirxil plan` (PRD §19) stops after producing the plan — there's no separate
-"approve, then auto-execute" handoff; running any of it for real is a plain `kirxil run` (or
-`generate`/`refactor`/...) call with that plan, or a piece of it, as the goal. `kirxil build`
-(PRD §20) is the one that actually does all four phases itself in one run, including fixing and
-re-running a genuinely failing test rather than just reporting it.
+other goal). `kirxil build` (PRD §20) is the one that actually does all four phases itself in one
+run, including fixing and re-running a genuinely failing test rather than just reporting it.
+
+`kirxil plan "<goal>"` (PRD §19) is the one exception with its own presentation: it stops after
+producing the plan (no auto-execute), but shows the model's real plan text in a bordered
+`KIRXIL PLAN` panel and — in a real terminal only, never when piped/scripted — then offers a real
+follow-up: press Enter to immediately run `kirxil build` with that exact same goal, or type
+anything else to skip. This is genuine chaining of two commands that already exist independently,
+not a new planning engine; `/plan <goal>` does the same thing inside the interactive REPL.
 
 ### Memory (PRD §33)
 
@@ -165,21 +183,28 @@ with `model.default` instead.
 
 ### Permission Engine (PRD §17)
 
-Reading and listing files runs immediately (LOW risk). Writing a file runs immediately too
-(MEDIUM — a deliberate choice, see `services/ai-service/app/tools/host_tools.py`). Running a
-shell command is HIGH risk — the run pauses, shows you the exact command, and waits for a real
-`y`/`n` before `host-runner` ever sees it (`n` stops that goal for good). Approving doesn't just
-run that one command and quit, either — the agent picks the conversation back up and keeps
-working, the same way it would if nothing had paused. This isn't CLI-side theater: the pause,
-the risk tiers, and the approve/reject endpoints all live in the backend
-(`app/tools/service.py`, `app/agents/runner.py`) and are the same ones the web app's Agents/Tools
-pages already used for other tools (`document.delete`, etc.) — this just extends that same real
-mechanism to `host.run_command` and wires the CLI to it.
+Reading, listing, and searching files runs immediately (LOW risk). Writing or editing a file runs
+immediately too (MEDIUM — a deliberate choice, see `services/ai-service/app/tools/host_tools.py`).
+Deleting a file or running a shell command is HIGH risk — the run pauses in a bordered panel
+showing the exact tool call and its risk level, and waits for a real `y`/`n` before `host-runner`
+ever sees it (`n` stops that goal for good). Approving doesn't just run that one action and quit,
+either — the agent picks the conversation back up and keeps working, the same way it would if
+nothing had paused. Nothing registered above HIGH exists in `host.*`/`code.*` today, but if a
+CRITICAL-risk tool is ever added, the same panel asks for a real typed `CONFIRM` instead of a
+single keypress — a real, generic mechanism, not tied to any particular tool. This isn't
+CLI-side theater: the pause, the risk tiers, and the approve/reject endpoints all live in the
+backend (`app/tools/service.py`, `app/agents/runner.py`) and are the same ones the web app's
+Agents/Tools pages already used for other tools (`document.delete`, etc.) — this just extends
+that same real mechanism to `host.*`/`code.*` and wires the CLI to it. Not built: an "always
+allow for project/session" option — that needs new backend policy storage (remembering a decision
+across executions), a real security-relevant scope decision on its own, not bundled into a visual
+pass.
 
 ### Checkpoint & Rollback (PRD §29)
 
-`host.write_file`/`host.run_command` write to disk immediately, with no approval gate of their
-own — the Permission Engine above only covers `host.run_command`. The other half of "reversible"
+`host.write_file`/`host.edit_file` write to disk immediately, with no approval gate of their own
+— the Permission Engine above only pauses HIGH-risk tools (`host.delete_file`,
+`host.run_command`). The other half of "reversible"
 is `kirxil checkpoint`/`kirxil undo`, real `git` commits under the hood: if the current directory
 is a git repo, every `kirxil run`/interactive goal auto-commits whatever's changed *before* it
 starts (silently, and only if there's actually something to commit — a clean tree or a non-repo
@@ -193,6 +218,12 @@ triggered manually with your own label instead of automatically before a run.
 
 - `kirxil run "<goal>"` — one goal, non-interactively, plain-text output (works when
   piped/redirected — scripting-friendly). `--model`, `--dir` to override the defaults.
+- `kirxil init` — interactively scaffold a `.kirxil.yml` in the current directory: asks for a
+  project name, lets you pick `model.default` from the real `kirxil models` list, and an optional
+  `agent.max_iterations`. Asks before overwriting an existing file.
+- `kirxil sessions` — lists past agent runs for this workspace, newest first — a real client of
+  the same `GET /agents` endpoint the web app's Agents page already uses, just not previously
+  reachable from the CLI.
 - `kirxil models` — list what this backend currently offers.
 - `kirxil git diff` / `status` / `log` / `branch` / `blame <file>` — real `git` (PRD §28: Diff,
   Commits/History, Branches, Blame), run locally wherever you launched this from (not through the

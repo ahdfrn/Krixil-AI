@@ -422,3 +422,36 @@ record, not the printed transcript) — the same already-documented `llama3.1:8b
 narration limitation from earlier in this track, named plainly rather than glossed over. CLI
 15/22 of §33 now real. 62/62 CLI tests (up from 61), tsc clean. See `coding-agent.md`'s
 "`kirxil build` (§20) and an honest look at `--auto` (§21)" section.
+
+**CLI visual overhaul — real subset of the "AI operating system" mockup (done, 2026-09-01).** User
+shared a very detailed terminal-UI mockup styled after "Claude Code + Blackbox CLI" — boxed
+panels, a multi-agent orchestrator tree, a swarm graph, a `kirxil brain` command with fabricated
+indexing stats, security/deploy centers, "Always allow" permission memory, a self-healing loop
+with attempt counters. About half described real UI polish over data Krixil already has; the
+other half described capabilities that don't exist anywhere in this deployment. Built the real
+half only, in the mockup's own visual language: a richer banner (real file/folder counts, real
+online probe), real `-`/`+` diff rendering for edits (reusing the tool call's own real
+`old_string`/`new_string`, one implementation shared by both the Ink REPL and `kirxil run`'s
+plain-text output), a restyled permission panel showing the real risk level with a real typed-
+`CONFIRM` variant for CRITICAL risk, derived step-state labels ("Running tests…"/"Editing…")
+inferred from the real in-flight tool call, a real status bar (tool-call count, test-attempt
+count, `git diff --stat`-derived change stats), two new commands (`kirxil init` scaffolds a real
+`.kirxil.yml`; `kirxil sessions` lists real past runs via the existing `GET /agents` endpoint,
+previously web-app-only), real test-attempt counting from the transcript's own `run_command`
+calls, and a bordered `KIRXIL PLAN` panel for `kirxil plan` with a real `[Enter]` → `kirxil build`
+handoff using the same goal (real chaining of two already-real commands, gated to actual
+interactive terminals so piped/scripted use stays deterministic). Explicitly not built: the
+multi-agent orchestrator tree/swarm mode (one real agent loop, nothing to render independently),
+`kirxil brain`/Project Brain (§13, no indexer), `kirxil security` (no scanner),
+`kirxil deploy`/`logs` (no deploy target), and "Always allow for project/session" (needs new
+backend policy storage — a real security decision on its own). No backend changes. CLI 84/84
+tests (up from 62), tsc clean. Verified live (a fresh throwaway account, real session backed up
+and restored again): `kirxil init` → `kirxil config` round-trip; a real `kirxil run` edit showing
+an actual `+1/-1` diff with the file's real content confirmed changed; `kirxil sessions` matching
+`GET /agents` exactly; a real HIGH-risk `host.run_command` pause through the restyled panel,
+resuming correctly after approval; a real `kirxil plan` goal rendering the model's actual plan
+text in the bordered panel. The `[Enter]`-to-`build` handoff itself couldn't be driven through a
+real keypress in this sandboxed environment (no TTY available to a non-interactively-launched
+process here) — its own execution path reuses the already-verified run pipeline, but the actual
+keypress-triggered path is unverified and worth a human check. See `coding-agent.md`'s "Visual
+overhaul: the CLI's 'AI operating system' look, real subset only" section and `cli/README.md`.

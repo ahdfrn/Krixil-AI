@@ -5,10 +5,19 @@
  */
 
 import { ApiError, KrixilApi, type AgentRun } from "./api.js";
-import { autoCheckpoint } from "./checkpoint.js";
+import { autoCheckpoint, workingTreeChangeSummary } from "./checkpoint.js";
 import { buildGoal } from "./goal.js";
-import { confirm } from "./prompt.js";
-import { describeApprovalPrompt, describeObservation, summarizeToolCall, trimLines } from "./render.js";
+import { confirm, prompt } from "./prompt.js";
+import {
+  buildToolCallArgsLookup,
+  countTestAttempts,
+  describeApprovalPrompt,
+  describeObservation,
+  planPanelLines,
+  summarizeToolCall,
+  trimLines,
+} from "./render.js";
+import { buildVerbInstruction } from "./verbs.js";
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -27,10 +36,21 @@ async function handleApproval(api: KrixilApi, executionId: string): Promise<void
     console.error(err instanceof ApiError ? `Couldn't load the pending action: ${err.detail}` : "Couldn't load the pending action.");
     return;
   }
-  const { title, detail } = describeApprovalPrompt(execution.tool_name, execution.risk_level, execution.input);
+  const { title, detail, riskLevel, requireTypedConfirmation } = describeApprovalPrompt(
+    execution.tool_name,
+    execution.risk_level,
+    execution.input,
+  );
   console.log(`\n⏸ ${title}`);
+  console.log(`  Risk: ${riskLevel.toUpperCase()}`);
   console.log(`  ${detail}`);
-  const approved = await confirm("Approve?");
+  let approved: boolean;
+  if (requireTypedConfirmation) {
+    const typed = await prompt("  Type CONFIRM to proceed, or anything else to cancel: ");
+    approved = typed.trim().toUpperCase() === "CONFIRM";
+  } else {
+    approved = await confirm("Approve?");
+  }
   try {
     if (approved) {
       await api.approveExecution(executionId);
@@ -43,13 +63,13 @@ async function handleApproval(api: KrixilApi, executionId: string): Promise<void
   }
 }
 
-function printStep(step: AgentRun["steps"][number]): void {
+function printStep(step: AgentRun["steps"][number], toolCallArgs?: Record<string, unknown>): void {
   if (step.type === "tool_call") {
     console.log(`⏺ ${summarizeToolCall(step.tool_name, (step.content.arguments as Record<string, unknown>) ?? {})}`);
     return;
   }
   if (step.type === "observation") {
-    const { summary, body } = describeObservation(step);
+    const { summary, body } = describeObservation(step, toolCallArgs);
     console.log(`  ⎿ ${summary}`);
     for (const line of trimLines(body)) console.log(`     ${line}`);
     return;
@@ -58,12 +78,20 @@ function printStep(step: AgentRun["steps"][number]): void {
   console.log(String(step.content.content ?? ""));
 }
 
+/** Set only by `kirxil plan "<goal>"` (index.ts) — carries the *raw* goal (not the verb-wrapped
+ * plan instruction) so a successful plan can offer a real follow-up into `kirxil build` with the
+ * same goal, without runOnce.ts needing to know anything about verbs.ts's instruction text. */
+export interface PlanHandoff {
+  rawGoal: string;
+}
+
 export async function runGoalOnce(
   api: KrixilApi,
   instruction: string,
   dir: string,
   model: string,
   maxSteps?: number,
+  planHandoff?: PlanHandoff,
 ): Promise<void> {
   const goalText = buildGoal(instruction, dir);
   console.log(`› ${instruction}\n`);
@@ -98,7 +126,14 @@ export async function runGoalOnce(
         console.error(err instanceof ApiError ? `Lost track of that run: ${err.detail}` : "Lost track of that run.");
         break;
       }
-      for (; printed < run.steps.length; printed++) printStep(run.steps[printed]!);
+      const toolCallArgsByStep = buildToolCallArgsLookup(run.steps);
+      for (; printed < run.steps.length; printed++) {
+        const step = run.steps[printed]!;
+        // With a plan handoff in play, the final_response is shown once, below, inside the
+        // bordered PLAN panel — not also printed plainly here as every other run's is.
+        if (planHandoff && step.type === "final_response") continue;
+        printStep(step, step.type === "observation" ? toolCallArgsByStep.get(step.step_number) : undefined);
+      }
       if (run.status === "waiting_approval" && run.pending_execution_id) {
         await handleApproval(api, run.pending_execution_id);
         continue;
@@ -110,8 +145,34 @@ export async function runGoalOnce(
     process.off("SIGINT", onSigint);
   }
 
+  if (planHandoff && run.status === "completed") {
+    console.log("");
+    for (const line of planPanelLines(run.final_response ?? "")) console.log(line);
+  }
+
   console.log("");
   if (run.status === "cancelled") console.log("Stopped.");
   if (run.error_message) console.error(run.error_message);
+
+  const toolCalls = run.steps.filter((s) => s.type === "tool_call").length;
+  const testAttempts = countTestAttempts(run.steps);
+  const changes = await workingTreeChangeSummary(process.cwd());
+  const summaryParts = [`${toolCalls} tool call${toolCalls === 1 ? "" : "s"}`];
+  if (testAttempts > 0) summaryParts.push(`${testAttempts} test attempt${testAttempts === 1 ? "" : "s"}`);
+  if (changes.insertions > 0 || changes.deletions > 0) summaryParts.push(`+${changes.insertions}/-${changes.deletions}`);
+  console.log(summaryParts.join(" · "));
+
+  // Real chaining of two already-real commands (plan → build), only offered after a genuinely
+  // completed plan and only in a real interactive terminal — piped/scripted `kirxil plan` output
+  // must stay deterministic, not block on a prompt nothing will ever answer.
+  if (planHandoff && run.status === "completed" && process.stdin.isTTY) {
+    const answer = await prompt("\nPress Enter to run `kirxil build` with this goal now, or type anything else to skip: ");
+    if (answer.trim() === "") {
+      console.log("");
+      await runGoalOnce(api, buildVerbInstruction("build", planHandoff.rawGoal), dir, model, maxSteps);
+      return;
+    }
+  }
+
   process.exitCode = run.status === "failed" ? 1 : 0;
 }

@@ -112,6 +112,12 @@ export class KrixilApi {
     return z.array(ModelSchema).parse(await response.json());
   }
 
+  async listRuns(): Promise<AgentRunOut[]> {
+    const response = await fetch(`${this.baseUrl}/agents`, { headers: this.headers() });
+    if (!response.ok) await parseError(response);
+    return z.array(AgentRunSchema).parse(await response.json());
+  }
+
   async runAgent(goal: string, model?: string, maxSteps?: number): Promise<AgentRunOut> {
     const response = await fetch(`${this.baseUrl}/agents/run`, {
       method: "POST",

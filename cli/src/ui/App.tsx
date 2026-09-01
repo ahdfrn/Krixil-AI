@@ -4,8 +4,11 @@ import TextInput from "ink-text-input";
 import { ApiError, KrixilApi, type AgentRun, type ModelInfo } from "../api.js";
 import { autoCheckpoint, diffStatSinceCheckpoint, findLastCheckpoint, resetToBeforeCheckpoint } from "../checkpoint.js";
 import { buildGoal } from "../goal.js";
-import { describeApprovalPrompt } from "../render.js";
+import { countTestAttempts, describeApprovalPrompt } from "../render.js";
+import { buildVerbInstruction } from "../verbs.js";
 import { Banner } from "./Banner.js";
+import { PlanPanel } from "./PlanPanel.js";
+import { StatusBar } from "./StatusBar.js";
 import { Transcript } from "./Transcript.js";
 
 interface PendingConfirm {
@@ -13,12 +16,18 @@ interface PendingConfirm {
   detail: string;
   approveLabel: string;
   rejectLabel: string;
+  riskLevel?: string;
+  requireTypedConfirmation?: boolean;
 }
 
 interface HistoryEntry {
   key: string;
   goal: string;
   run: AgentRun;
+  // Set for a run started via `/plan` — its final_response is a plan, shown in a bordered
+  // PlanPanel instead of plain text, with a real "run kirxil build with this goal now?" handoff
+  // once it completes (see runGoal's verb param below).
+  isPlan?: boolean;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -51,19 +60,32 @@ export function App({
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const [elapsed, setElapsed] = useState(0);
   const [pendingConfirm, setPendingConfirm] = useState<PendingConfirm | null>(null);
+  const [typedConfirmValue, setTypedConfirmValue] = useState("");
   const activeRunIdRef = useRef<string | null>(null);
   const confirmResolveRef = useRef<((approved: boolean) => void) | null>(null);
 
+  const resolveConfirm = useCallback((approved: boolean) => {
+    confirmResolveRef.current?.(approved);
+    confirmResolveRef.current = null;
+    setPendingConfirm(null);
+    setTypedConfirmValue("");
+  }, []);
+
   useInput((char, key) => {
-    if (confirmResolveRef.current) {
+    // A CRITICAL-risk pause takes real typed text ("CONFIRM") via the TextInput below instead of
+    // a single y/n keypress — this handler must get out of its way rather than swallowing the
+    // 'y'/'n'/'c'/etc. characters that are part of the word "CONFIRM" itself.
+    if (confirmResolveRef.current && !pendingConfirm?.requireTypedConfirmation) {
       const lower = char.toLowerCase();
       if (lower === "y") {
-        confirmResolveRef.current(true);
-        confirmResolveRef.current = null;
+        resolveConfirm(true);
       } else if (lower === "n" || key.escape) {
-        confirmResolveRef.current(false);
-        confirmResolveRef.current = null;
+        resolveConfirm(false);
       }
+      return;
+    }
+    if (confirmResolveRef.current && pendingConfirm?.requireTypedConfirmation && key.escape) {
+      resolveConfirm(false);
       return;
     }
     if (key.ctrl && char === "c") {
@@ -76,37 +98,51 @@ export function App({
     }
   });
 
-  // Blocks on a real keypress (y/n, handled in useInput above) instead of guessing — shared by
-  // the tool-approval pause below and by `/undo`'s "are you sure" gate, since both are the same
-  // shape (show what's about to happen, wait for a real answer, act on it).
-  const waitForConfirm = useCallback((title: string, detail: string, approveLabel = "approve", rejectLabel = "reject") => {
-    return new Promise<boolean>((resolve) => {
-      confirmResolveRef.current = resolve;
-      setPendingConfirm({ title, detail, approveLabel, rejectLabel });
-    });
-  }, []);
+  // Blocks on a real answer (a y/n keypress, or typed "CONFIRM" for CRITICAL risk — both handled
+  // in useInput above / the TextInput below) instead of guessing — shared by the tool-approval
+  // pause below and by `/undo`'s "are you sure" gate, since both are the same shape (show what's
+  // about to happen, wait for a real answer, act on it).
+  const waitForConfirm = useCallback(
+    (
+      title: string,
+      detail: string,
+      approveLabel = "approve",
+      rejectLabel = "reject",
+      riskLevel?: string,
+      requireTypedConfirmation = false,
+    ) => {
+      return new Promise<boolean>((resolve) => {
+        confirmResolveRef.current = resolve;
+        setPendingConfirm({ title, detail, approveLabel, rejectLabel, riskLevel, requireTypedConfirmation });
+      });
+    },
+    [],
+  );
 
   const pollRun = useCallback(
-    async (runId: string, entryKey: string) => {
+    async (runId: string, entryKey: string): Promise<AgentRun | undefined> => {
       const start = Date.now();
+      let run: AgentRun | undefined;
       for (;;) {
-        let run: AgentRun;
         try {
           run = await api.getStatus(runId);
         } catch (err) {
           setNotice(err instanceof ApiError ? `Lost track of that run: ${err.detail}` : "Lost track of that run.");
           break;
         }
-        setHistory((prev) => prev.map((h) => (h.key === entryKey ? { ...h, run } : h)));
+        setHistory((prev) => prev.map((h) => (h.key === entryKey ? { ...h, run: run! } : h)));
         setElapsed(Math.floor((Date.now() - start) / 1000));
 
         if (run.status === "waiting_approval" && run.pending_execution_id) {
           const executionId = run.pending_execution_id;
           try {
             const execution = await api.getExecution(executionId);
-            const { title, detail } = describeApprovalPrompt(execution.tool_name, execution.risk_level, execution.input);
-            const approved = await waitForConfirm(title, detail);
-            setPendingConfirm(null);
+            const { title, detail, riskLevel, requireTypedConfirmation } = describeApprovalPrompt(
+              execution.tool_name,
+              execution.risk_level,
+              execution.input,
+            );
+            const approved = await waitForConfirm(title, detail, "approve", "reject", riskLevel, requireTypedConfirmation);
             if (approved) await api.approveExecution(executionId);
             else await api.rejectExecution(executionId, "rejected in interactive mode");
           } catch (err) {
@@ -122,15 +158,21 @@ export function App({
       }
       activeRunIdRef.current = null;
       setActiveRunId(null);
+      return run;
     },
     [api, waitForConfirm],
   );
 
+  // verb undefined = the plain-typed-goal path (unchanged); "plan"/"build" wrap the raw goal via
+  // verbs.ts's real instruction templates. A completed plan offers a real, awaited follow-up into
+  // `kirxil build` with the exact same rawGoal — genuine chaining of two already-real commands,
+  // not a new planning engine.
   const runGoal = useCallback(
-    async (instruction: string) => {
+    async (rawGoal: string, verb?: "plan" | "build") => {
       setNotice(null);
+      const instruction = verb ? buildVerbInstruction(verb, rawGoal) : rawGoal;
       const goalText = buildGoal(instruction, dir);
-      const checkpointHash = await autoCheckpoint(process.cwd(), instruction);
+      const checkpointHash = await autoCheckpoint(process.cwd(), rawGoal);
       if (checkpointHash) setNotice(`Checkpointed ${checkpointHash} — \`kirxil undo\` (from a shell) can revert to this.`);
       let started;
       try {
@@ -142,10 +184,19 @@ export function App({
       const key = started.id;
       activeRunIdRef.current = started.id;
       setActiveRunId(started.id);
-      setHistory((prev) => [...prev, { key, goal: instruction, run: { ...started, steps: [] } }]);
-      void pollRun(started.id, key);
+      setHistory((prev) => [...prev, { key, goal: rawGoal, run: { ...started, steps: [] }, isPlan: verb === "plan" }]);
+      const finalRun = await pollRun(started.id, key);
+      if (verb === "plan" && finalRun?.status === "completed") {
+        const approved = await waitForConfirm(
+          "Run `kirxil build` with this goal now?",
+          "The plan above is read-only — nothing has changed yet.",
+          "build",
+          "skip",
+        );
+        if (approved) void runGoal(rawGoal, "build");
+      }
     },
-    [api, dir, model, maxSteps, pollRun],
+    [api, dir, model, maxSteps, pollRun, waitForConfirm],
   );
 
   async function handleSubmit(value: string) {
@@ -160,6 +211,7 @@ export function App({
     if (trimmed === "/help") {
       setNotice(
         "/model [id] — list or switch models\n/cwd — show the current folder\n" +
+          "/plan <goal> — investigate and show a read-only plan, with a real handoff into `kirxil build`\n" +
           "/undo — revert to the last kirxil checkpoint (git reset --hard, asks first)\n/exit — quit",
       );
       return;
@@ -194,6 +246,19 @@ export function App({
       setNotice(result.ok ? "Reverted." : result.reason);
       return;
     }
+    if (trimmed === "/plan" || trimmed.startsWith("/plan ")) {
+      const goalArg = trimmed.slice("/plan".length).trim();
+      if (!goalArg) {
+        setNotice("Usage: /plan <goal>");
+        return;
+      }
+      if (activeRunIdRef.current) {
+        setNotice("A run is already in progress — wait for it to finish or Ctrl+C to stop it.");
+        return;
+      }
+      void runGoal(goalArg, "plan");
+      return;
+    }
     if (trimmed === "/model" || trimmed.startsWith("/model ")) {
       const arg = trimmed.slice("/model".length).trim();
       if (arg) {
@@ -219,17 +284,24 @@ export function App({
     void runGoal(trimmed);
   }
 
+  const lastRun = history.length > 0 ? history[history.length - 1]!.run : null;
+
   return (
     <Box flexDirection="column">
-      <Banner dir={dir} hostRoot={hostRoot} model={model} projectName={projectName} />
+      <Banner api={api} dir={dir} hostRoot={hostRoot} model={model} projectName={projectName} />
       {history.map((h) => (
-        <Box key={h.key} marginBottom={1}>
+        <Box key={h.key} flexDirection="column" marginBottom={1}>
           <Transcript
             goal={h.goal}
-            steps={h.run.steps}
+            steps={h.isPlan ? h.run.steps.filter((s) => s.type !== "final_response") : h.run.steps}
             status={h.run.status}
             elapsedSeconds={h.run.id === activeRunId ? elapsed : 0}
           />
+          {h.isPlan && h.run.status === "completed" && h.run.final_response && (
+            <Box marginTop={1}>
+              <PlanPanel planText={h.run.final_response} />
+            </Box>
+          )}
         </Box>
       ))}
       {notice && (
@@ -238,14 +310,37 @@ export function App({
         </Box>
       )}
       {pendingConfirm ? (
-        <Box flexDirection="column" borderStyle="round" borderColor="yellow" paddingX={1}>
-          <Text bold color="yellow">
+        <Box
+          flexDirection="column"
+          borderStyle="round"
+          borderColor={pendingConfirm.riskLevel === "critical" ? "red" : "yellow"}
+          paddingX={1}
+        >
+          <Text bold color={pendingConfirm.riskLevel === "critical" ? "red" : "yellow"}>
             ⏸ {pendingConfirm.title}
           </Text>
+          {pendingConfirm.riskLevel && (
+            <Text dimColor>
+              Risk: <Text bold={pendingConfirm.riskLevel === "critical"}>{pendingConfirm.riskLevel.toUpperCase()}</Text>
+            </Text>
+          )}
           <Text dimColor>{pendingConfirm.detail}</Text>
-          <Text>
-            Press <Text bold>y</Text> to {pendingConfirm.approveLabel}, <Text bold>n</Text> to {pendingConfirm.rejectLabel}.
-          </Text>
+          {pendingConfirm.requireTypedConfirmation ? (
+            <Box marginTop={1}>
+              <Text>
+                Type <Text bold color="red">CONFIRM</Text> to proceed, or Esc to cancel:{" "}
+              </Text>
+              <TextInput
+                value={typedConfirmValue}
+                onChange={setTypedConfirmValue}
+                onSubmit={(v) => resolveConfirm(v.trim().toUpperCase() === "CONFIRM")}
+              />
+            </Box>
+          ) : (
+            <Text>
+              Press <Text bold>y</Text> to {pendingConfirm.approveLabel}, <Text bold>n</Text> to {pendingConfirm.rejectLabel}.
+            </Text>
+          )}
         </Box>
       ) : (
         <Box>
@@ -255,6 +350,12 @@ export function App({
           <TextInput value={input} onChange={setInput} onSubmit={(v) => void handleSubmit(v)} />
         </Box>
       )}
+      <Box marginTop={1}>
+        <StatusBar
+          toolCalls={lastRun ? lastRun.steps.filter((s) => s.type === "tool_call").length : 0}
+          testAttempts={lastRun ? countTestAttempts(lastRun.steps) : 0}
+        />
+      </Box>
     </Box>
   );
 }

@@ -17,6 +17,11 @@ const RUN_TOOLS = new Set(["host.run_command"]);
 export const MAX_LISTED_ENTRIES = 20;
 export const MAX_OUTPUT_LINES = 40;
 
+/** Matches a command that's actually invoking a test runner — used to derive both the "Running
+ * tests…" in-flight label and the real test-attempt count, from the same real transcript data
+ * rather than two separately-maintained heuristics. */
+const TEST_COMMAND_PATTERN = /\b(pytest|py\.test|npm (?:run )?test|yarn test|pnpm test|vitest|jest|go test|cargo test|mvn test|gradle test)\b/i;
+
 export type Tone = "success" | "error" | "muted";
 
 export interface ObservationSummary {
@@ -43,6 +48,68 @@ export function summarizeToolCall(toolName: string | null, args: Record<string, 
   return toolName ?? "Tool call";
 }
 
+/** A short label for the tool call currently in flight (no observation yet) — derived from the
+ * real tool name/command, not a fabricated fixed state machine with steps this loop doesn't
+ * actually have. Returns null for an unknown/missing tool name so callers can fall back to a
+ * generic "Working…". */
+export function describeInFlightStep(toolName: string | null, args: Record<string, unknown>): string | null {
+  if (!toolName) return null;
+  if (RUN_TOOLS.has(toolName)) {
+    const command = typeof args.command === "string" ? args.command : "";
+    return TEST_COMMAND_PATTERN.test(command) ? "Running tests…" : "Running a command…";
+  }
+  if (SEARCH_TOOLS.has(toolName)) return "Searching…";
+  if (EDIT_TOOLS.has(toolName)) return "Editing…";
+  if (WRITE_TOOLS.has(toolName)) return "Writing…";
+  if (READ_TOOLS.has(toolName)) return "Reading…";
+  if (FILE_TOOLS.has(toolName)) return "Listing files…";
+  if (DELETE_TOOLS.has(toolName)) return "Deleting…";
+  return "Working…";
+}
+
+/** How many of the real tool_call steps in this transcript look like a test-runner invocation —
+ * a real count over real commands, not a fabricated "self-healing loop" attempt counter. */
+export function countTestAttempts(steps: AgentStep[]): number {
+  let count = 0;
+  for (const step of steps) {
+    if (step.type !== "tool_call" || !step.tool_name || !RUN_TOOLS.has(step.tool_name)) continue;
+    const args = (step.content.arguments as Record<string, unknown>) ?? {};
+    const command = typeof args.command === "string" ? args.command : "";
+    if (TEST_COMMAND_PATTERN.test(command)) count++;
+  }
+  return count;
+}
+
+/** The most recent tool_call step that doesn't have a matching observation yet (same
+ * step_number, by design — see buildToolCallArgsLookup) — i.e. what the agent is doing *right
+ * now*. Null once every tool_call has been answered (nothing in flight, only "thinking" or
+ * about to finish) so callers fall back to a generic "Working…". */
+export function findInFlightToolCall(steps: AgentStep[]): AgentStep | null {
+  const observedStepNumbers = new Set(steps.filter((s) => s.type === "observation").map((s) => s.step_number));
+  let result: AgentStep | null = null;
+  for (const step of steps) {
+    if (step.type === "tool_call" && !observedStepNumbers.has(step.step_number)) result = step;
+  }
+  return result;
+}
+
+export const PLAN_PANEL_WIDTH = 70;
+
+/** Lines for a bordered "KIRXIL PLAN" panel around the model's real plan text (verbs.ts's `plan`
+ * instruction asks it to format as "PLAN" + numbered steps + an estimate) — a shared, pure,
+ * testable piece so runOnce.ts's plain console.log rendering and ui/PlanPanel.tsx's Ink rendering
+ * draw the exact same box around the exact same real text, never two renderers drifting apart. */
+export function planPanelLines(planText: string, width: number = PLAN_PANEL_WIDTH): string[] {
+  const header = "─ KIRXIL PLAN ";
+  return [
+    `┌${header}${"─".repeat(Math.max(0, width - header.length))}┐`,
+    "",
+    ...planText.split("\n"),
+    "",
+    `└${"─".repeat(width)}┘`,
+  ];
+}
+
 export function trimLines(lines: string[]): string[] {
   if (lines.length <= MAX_OUTPUT_LINES) return lines;
   return [...lines.slice(0, MAX_OUTPUT_LINES), `… and ${lines.length - MAX_OUTPUT_LINES} more lines`];
@@ -51,6 +118,12 @@ export function trimLines(lines: string[]): string[] {
 export interface ApprovalPrompt {
   title: string;
   detail: string;
+  riskLevel: string;
+  /** CRITICAL isn't reachable by any host./code. tool today (APPROVAL_REQUIRED_LEVELS is
+   * {HIGH, CRITICAL} but nothing in app/tools/ is registered above HIGH) — this still tells
+   * the UI to ask for a typed "CONFIRM" rather than a single y/n keypress if that ever changes,
+   * rather than silently treating a future CRITICAL tool the same as HIGH. */
+  requireTypedConfirmation: boolean;
 }
 
 /**
@@ -60,13 +133,31 @@ export interface ApprovalPrompt {
  * the web app's Agents page shows for the same pause (apps/web/.../agents/page.tsx).
  */
 export function describeApprovalPrompt(toolName: string, riskLevel: string, args: Record<string, unknown>): ApprovalPrompt {
+  const normalized = riskLevel.toLowerCase();
   return {
     title: summarizeToolCall(toolName, args),
     detail: `${riskLevel.toUpperCase()} risk — approve to run it for real, or reject to stop this goal.`,
+    riskLevel: normalized,
+    requireTypedConfirmation: normalized === "critical",
   };
 }
 
-export function describeObservation(step: AgentStep): ObservationSummary {
+/** tool_call and its own observation share one step_number by design (app/agents/runner.py) —
+ * this lets a renderer look up "what arguments produced this observation" without needing the
+ * caller to track index math itself. Used for host.edit_file/code.edit_file specifically, whose
+ * observation alone (`{path, edited: true}`) doesn't carry the actual content changed — the real
+ * before/after text only exists on the tool_call's own arguments. */
+export function buildToolCallArgsLookup(steps: AgentStep[]): Map<number, Record<string, unknown>> {
+  const lookup = new Map<number, Record<string, unknown>>();
+  for (const step of steps) {
+    if (step.type === "tool_call") {
+      lookup.set(step.step_number, (step.content.arguments as Record<string, unknown>) ?? {});
+    }
+  }
+  return lookup;
+}
+
+export function describeObservation(step: AgentStep, toolCallArgs?: Record<string, unknown>): ObservationSummary {
   const content = step.content;
   const toolName = step.tool_name;
 
@@ -90,7 +181,21 @@ export function describeObservation(step: AgentStep): ObservationSummary {
 
   if (toolName && WRITE_TOOLS.has(toolName)) return { summary: "Saved", body: [], tone: "success" };
 
-  if (toolName && EDIT_TOOLS.has(toolName)) return { summary: "Edited", body: [], tone: "success" };
+  if (toolName && EDIT_TOOLS.has(toolName)) {
+    const oldString = typeof toolCallArgs?.old_string === "string" ? toolCallArgs.old_string : undefined;
+    const newString = typeof toolCallArgs?.new_string === "string" ? toolCallArgs.new_string : undefined;
+    // Real before/after content when the caller has it (buildToolCallArgsLookup) — not a real
+    // line-diff algorithm (no LCS/alignment), just the two real blocks the edit actually used,
+    // shown as -/+ the way a diff reads. Falls back to the old one-line "Edited" when the
+    // arguments aren't available (e.g. a caller that hasn't wired the lookup through yet).
+    if (oldString === undefined || newString === undefined) {
+      return { summary: "Edited", body: [], tone: "success" };
+    }
+    const oldLines = oldString.split("\n");
+    const newLines = newString.split("\n");
+    const body = [...oldLines.map((l) => `- ${l}`), ...newLines.map((l) => `+ ${l}`)];
+    return { summary: `Edited (+${newLines.length}/-${oldLines.length})`, body, tone: "success" };
+  }
 
   if (toolName && DELETE_TOOLS.has(toolName)) return { summary: "Deleted", body: [], tone: "success" };
 

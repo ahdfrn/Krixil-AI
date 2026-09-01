@@ -818,3 +818,16 @@ reusing `services/ai-service`'s tools and agent loop rather than rebuilding them
 end-to-end: `host.run_command` is HIGH risk, an agent run really pauses for it, `kirxil` prompts
 for real approval, and approving resumes the run instead of ending it (see §17's status note
 above). 05–10 are not built.
+
+> **Visual design status (2026-09-01).** A separate, detailed terminal-UI mockup (boxed panels,
+> a multi-agent orchestrator tree, a swarm graph, `brain`/`security`/`deploy` commands, "Always
+> allow" permission memory, a self-healing attempt counter) was reviewed against what's actually
+> real in this deployment. The real half — plan text, tool calls, diffs, risk-gated approvals, git
+> state, run history — now has that visual treatment: a bordered `KIRXIL PLAN` panel with a real
+> `kirxil build` handoff, a restyled permission panel with a real CRITICAL typed-confirm path,
+> real diff rendering for edits, derived in-flight step labels, a real status bar, and two new real
+> commands (`init`, `sessions`). The fabricated half (05 Project Brain, 08 Multi-Agent
+> Orchestrator, "Always allow", any deploy/security/swarm surface) was deliberately left
+> unbuilt — none of it exists in this platform yet, and rendering it would have been decorative UI
+> with nothing real behind it, the one thing this whole build has consistently avoided. See
+> `coding-agent.md`'s "Visual overhaul" section and `cli/README.md`.

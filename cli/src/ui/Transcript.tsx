@@ -8,7 +8,15 @@
 import React from "react";
 import { Box, Text } from "ink";
 import type { AgentStep } from "../api.js";
-import { describeObservation, summarizeToolCall, trimLines, type Tone } from "../render.js";
+import {
+  buildToolCallArgsLookup,
+  describeInFlightStep,
+  describeObservation,
+  findInFlightToolCall,
+  summarizeToolCall,
+  trimLines,
+  type Tone,
+} from "../render.js";
 
 const TONE_COLOR: Record<Tone, string> = { success: "green", error: "red", muted: "white" };
 
@@ -27,7 +35,7 @@ function ResultLines({ summary, body, tone }: { summary: string; body: string[];
   );
 }
 
-export function StepView({ step }: { step: AgentStep }) {
+export function StepView({ step, toolCallArgs }: { step: AgentStep; toolCallArgs?: Record<string, unknown> }) {
   if (step.type === "tool_call") {
     return (
       <Text>
@@ -39,7 +47,7 @@ export function StepView({ step }: { step: AgentStep }) {
     );
   }
   if (step.type === "observation") {
-    const { summary, body, tone } = describeObservation(step);
+    const { summary, body, tone } = describeObservation(step, toolCallArgs);
     return <ResultLines summary={summary} body={body} tone={tone} />;
   }
   // final_response
@@ -50,10 +58,18 @@ export function StepView({ step }: { step: AgentStep }) {
   );
 }
 
-export function WorkingIndicator({ elapsedSeconds, toolCalls }: { elapsedSeconds: number; toolCalls: number }) {
+export function WorkingIndicator({
+  elapsedSeconds,
+  toolCalls,
+  label,
+}: {
+  elapsedSeconds: number;
+  toolCalls: number;
+  label: string;
+}) {
   return (
     <Text color="cyan">
-      ● Working… ({elapsedSeconds}s · {toolCalls} tool calls) <Text dimColor>(Ctrl+C to stop)</Text>
+      ● {label} ({elapsedSeconds}s · {toolCalls} tool calls) <Text dimColor>(Ctrl+C to stop)</Text>
     </Text>
   );
 }
@@ -69,15 +85,26 @@ export function Transcript({
   status: string;
   elapsedSeconds: number;
 }) {
+  const toolCallArgsByStep = buildToolCallArgsLookup(steps);
+  const inFlight = findInFlightToolCall(steps);
+  const workingLabel = (inFlight && describeInFlightStep(inFlight.tool_name, toolCallArgsByStep.get(inFlight.step_number) ?? {})) ?? "Working…";
   return (
     <Box flexDirection="column">
       <Text bold>› {goal}</Text>
       <Box height={1} />
       {steps.map((step, i) => (
-        <StepView key={`${step.step_number}-${step.type}-${i}`} step={step} />
+        <StepView
+          key={`${step.step_number}-${step.type}-${i}`}
+          step={step}
+          toolCallArgs={step.type === "observation" ? toolCallArgsByStep.get(step.step_number) : undefined}
+        />
       ))}
       {status === "running" && (
-        <WorkingIndicator elapsedSeconds={elapsedSeconds} toolCalls={steps.filter((s) => s.type === "tool_call").length} />
+        <WorkingIndicator
+          elapsedSeconds={elapsedSeconds}
+          toolCalls={steps.filter((s) => s.type === "tool_call").length}
+          label={workingLabel}
+        />
       )}
       {status === "cancelled" && <Text dimColor>Stopped.</Text>}
       {status === "waiting_approval" && (

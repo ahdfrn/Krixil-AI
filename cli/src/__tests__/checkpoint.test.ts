@@ -8,7 +8,9 @@ import {
   diffStatSinceCheckpoint,
   findLastCheckpoint,
   manualCheckpoint,
+  parseShortstat,
   resetToBeforeCheckpoint,
+  workingTreeChangeSummary,
 } from "../checkpoint.js";
 
 // Real `git`, a real temp repo, no mocking — checkpoint.ts is a thin wrapper around actual git
@@ -86,5 +88,50 @@ describe("checkpoint (real git, temp repo)", () => {
     expect(content.stdout).toBe("hello");
     const status = await execa("git", ["status", "--porcelain"], { cwd: dir });
     expect(status.stdout).toBe("");
+  });
+
+  it("workingTreeChangeSummary reports real insertions/deletions against HEAD", async () => {
+    writeFileSync(join(dir, "a.txt"), "hello\nworld\n");
+    const summary = await workingTreeChangeSummary(dir);
+    expect(summary.filesChanged).toBe(1);
+    expect(summary.insertions).toBe(1);
+    expect(summary.deletions).toBe(0);
+  });
+
+  it("workingTreeChangeSummary is all-zero on a clean tree", async () => {
+    const summary = await workingTreeChangeSummary(dir);
+    expect(summary).toEqual({ filesChanged: 0, insertions: 0, deletions: 0 });
+  });
+
+  it("workingTreeChangeSummary is all-zero outside a git repo", async () => {
+    const outside = mkdtempSync(join(tmpdir(), "kirxil-not-a-repo-"));
+    try {
+      const summary = await workingTreeChangeSummary(outside);
+      expect(summary).toEqual({ filesChanged: 0, insertions: 0, deletions: 0 });
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("parseShortstat", () => {
+  it("parses a typical git --shortstat line", () => {
+    expect(parseShortstat("2 files changed, 14 insertions(+), 3 deletions(-)")).toEqual({
+      filesChanged: 2,
+      insertions: 14,
+      deletions: 3,
+    });
+  });
+
+  it("parses insertions-only (no deletions line at all)", () => {
+    expect(parseShortstat("1 file changed, 1 insertion(+)")).toEqual({
+      filesChanged: 1,
+      insertions: 1,
+      deletions: 0,
+    });
+  });
+
+  it("returns all zeros for empty input", () => {
+    expect(parseShortstat("")).toEqual({ filesChanged: 0, insertions: 0, deletions: 0 });
   });
 });

@@ -11,11 +11,14 @@
  * agent loop, just another client of it.
  */
 
+import { existsSync, writeFileSync } from "node:fs";
+import { basename, join } from "node:path";
 import { Command } from "commander";
+import { dump } from "js-yaml";
 import { render } from "ink";
 import React from "react";
 import { execa } from "execa";
-import { ApiError, KrixilApi } from "./api.js";
+import { ApiError, KrixilApi, type ModelInfo } from "./api.js";
 import { diffStatSinceCheckpoint, findLastCheckpoint, isGitRepo, manualCheckpoint, resetToBeforeCheckpoint } from "./checkpoint.js";
 import { clearSession, envLogin, loadSession, saveSession } from "./config.js";
 import { dirFromCwd } from "./goal.js";
@@ -80,6 +83,23 @@ async function runInstruction(instruction: string, dirOverride: string | undefin
   await runGoalOnce(client.api, instruction, dirOverride ?? dirFromCwd(client.hostRoot), model, maxSteps);
 }
 
+/** `kirxil plan <goal>` specifically — same pipeline as runInstruction, but keeps the raw goal
+ * around (not just the verb-wrapped instruction) so a completed plan can offer a real
+ * `kirxil build` handoff with that same goal (see runOnce.ts's PlanHandoff). */
+async function runPlanInstruction(rawGoal: string, dirOverride: string | undefined, modelOverride: string | undefined): Promise<void> {
+  const client = await resolveClientOrEnv();
+  if (!client) {
+    console.error(NOT_LOGGED_IN);
+    process.exit(1);
+  }
+  const projectConfig = loadProjectConfig();
+  const model = modelOverride ?? projectConfig?.model?.default ?? "auto";
+  const maxSteps = projectConfig?.agent?.max_iterations;
+  const instruction = buildVerbInstruction("plan", rawGoal);
+  const { runGoalOnce } = await import("./runOnce.js");
+  await runGoalOnce(client.api, instruction, dirOverride ?? dirFromCwd(client.hostRoot), model, maxSteps, { rawGoal });
+}
+
 const program = new Command();
 program.name("kirxil").description("Kirxil AI — an autonomous software engineering agent in your terminal.");
 
@@ -127,6 +147,26 @@ program
   });
 
 program
+  .command("sessions")
+  .description("List past agent runs for this workspace, newest first (real GET /agents data).")
+  .action(async () => {
+    const api = await requireApi();
+    try {
+      const runs = await api.listRuns();
+      if (runs.length === 0) {
+        console.log("No runs yet.");
+        return;
+      }
+      for (const r of runs) {
+        console.log(`${r.id}  ${r.status.padEnd(16)}  ${new Date(r.created_at).toLocaleString()}\n  ${r.goal}\n`);
+      }
+    } catch (err) {
+      console.error(err instanceof ApiError ? err.detail : "Couldn't list runs.");
+      process.exitCode = 1;
+    }
+  });
+
+program
   .command("run <goal>")
   .description("Run one goal and exit — for scripting, not the interactive feel of plain `kirxil`.")
   .option("--model <id>", "Model id from `kirxil models`, or \"auto\". Defaults to .kirxil.yml's model.default, else \"auto\".")
@@ -146,6 +186,12 @@ for (const verb of VERBS) {
     .option("--model <id>", "Model id from `kirxil models`, or \"auto\". Defaults to .kirxil.yml's model.default, else \"auto\".")
     .option("--dir <dir>", "Folder to work in, relative to HOST_ROOT (defaults to wherever this is launched from).")
     .action(async (argument: string | undefined, opts: { model?: string; dir?: string }) => {
+      // `plan` alone gets the bordered PLAN panel + real "run kirxil build with this goal now?"
+      // handoff (runOnce.ts's PlanHandoff) — every other verb uses the plain shared pipeline.
+      if (verb.name === "plan") {
+        await runPlanInstruction(argument ?? "", opts.dir, opts.model);
+        return;
+      }
       const instruction = buildVerbInstruction(verb.name, argument ?? "");
       await runInstruction(instruction, opts.dir, opts.model);
     });
@@ -333,6 +379,56 @@ program
     console.log(
       `  agent.max_iterations  = ${config.agent?.max_iterations ?? "(not set — this deployment's own default step budget used instead)"}`,
     );
+  });
+
+program
+  .command("init")
+  .description("Interactively scaffold a .kirxil.yml for the current directory (PRD §34).")
+  .action(async () => {
+    const targetPath = join(process.cwd(), ".kirxil.yml");
+    if (existsSync(targetPath)) {
+      const overwrite = await confirm(`${targetPath} already exists — overwrite it?`);
+      if (!overwrite) {
+        console.log("Cancelled — nothing changed.");
+        return;
+      }
+    }
+
+    const defaultName = basename(process.cwd());
+    const projectName = (await prompt(`Project name [${defaultName}]: `)) || defaultName;
+
+    const api = await requireApi();
+    let models: ModelInfo[] = [];
+    try {
+      models = await api.listModels();
+    } catch (err) {
+      console.error(err instanceof ApiError ? err.detail : "Couldn't list models — leaving model.default unset.");
+    }
+    let modelDefault: string | undefined;
+    if (models.length > 0) {
+      console.log("\nAvailable models:");
+      for (const m of models) console.log(`  ${m.id} — ${m.name}`);
+      const chosen = await prompt('model.default (blank for "auto"): ');
+      modelDefault = chosen || undefined;
+    }
+
+    const maxIterationsRaw = await prompt("agent.max_iterations (blank to use this deployment's own default budget): ");
+    let maxIterations: number | undefined;
+    if (maxIterationsRaw.trim()) {
+      const parsed = Number(maxIterationsRaw.trim());
+      if (Number.isInteger(parsed) && parsed > 0) {
+        maxIterations = parsed;
+      } else {
+        console.error("agent.max_iterations must be a positive whole number — leaving it unset.");
+      }
+    }
+
+    const config: Record<string, unknown> = { project: { name: projectName } };
+    if (modelDefault) config.model = { default: modelDefault };
+    if (maxIterations) config.agent = { max_iterations: maxIterations };
+
+    writeFileSync(targetPath, dump(config));
+    console.log(`\nWrote ${targetPath}. Run \`kirxil config\` to see it resolved.`);
   });
 
 program

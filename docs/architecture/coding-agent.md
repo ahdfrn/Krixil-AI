@@ -1042,3 +1042,89 @@ than `D:\` still requires editing `.env` and restarting the service (no dynamic 
 the user's explicit choice when this redesign was scoped; `host.run_command` is the one exception,
 now HIGH risk and approval-gated for real (see "Permission Engine wired end-to-end" above) — that
 line no longer describes the whole `host.*` surface, just what's left of it.
+
+## Visual overhaul: the CLI's "AI operating system" look, real subset only
+
+The user shared a very detailed, prescriptive mockup for `kirxil` — boxed panels, a multi-agent
+orchestrator tree, a "KIRXIL SWARM" graph, a `kirxil brain` command with fabricated indexing
+stats, security/deploy centers, a persistent context bar, "Always allow for project/session"
+permission memory, a self-healing loop with attempt counters — modeled after "Claude Code +
+Blackbox CLI, but with deeper visual and orchestration features." About half of it describes UI
+polish over data that's already real (plan text, tool calls, diffs, approve/reject, git state,
+run history); the other half describes capabilities that don't exist anywhere in Krixil today —
+no multi-agent orchestrator (still one generic agent loop), no AST/symbol/dependency indexer, no
+vulnerability scanner, no deploy target/environments, no swarm mode, and no backend concept of a
+remembered permission decision. This pass builds the real half in the mockup's own visual
+language and explicitly does not touch the fabricated half — building a tree of agent names that
+aren't really running independently, or a "12,482 files indexed" stat with no indexer behind it,
+would be exactly the kind of decorative, non-functional UI this project has avoided everywhere
+else.
+
+**What shipped, all real data:**
+
+- **Richer banner** (`ui/Banner.tsx`) — a real top-level file/folder count for the current
+  directory (a cheap `readdirSync`, not a recursive walk implying a deep index that doesn't
+  exist) and a real online/offline dot from an actual `api.listModels()` probe at startup.
+- **Real diff rendering for edits** (`render.ts`'s `describeObservation`, now taking the tool
+  call's own `old_string`/`new_string` via a new `buildToolCallArgsLookup` step-number lookup) —
+  `host.edit_file`/`code.edit_file` observations show an actual `-`/`+` block with real line
+  counts instead of a flat "Edited". One implementation, wired into both `ui/Transcript.tsx` (Ink)
+  and `runOnce.ts` (plain-text `kirxil run`), so the two renderers never drift.
+- **Permission prompt redesign** — the same real `y`/`n` approve/reject, now shown with its real
+  risk level in a bordered panel (red border for the one tier that would warrant it). CRITICAL
+  risk — unreachable by any registered tool today, but handled in case one is ever added — asks
+  for a real typed `CONFIRM` instead of a keypress, in both the Ink app and `runOnce.ts`.
+  Deliberately not built: "Always allow for project/session" — needs new backend policy storage
+  (remembering a decision across executions), a real security-relevant decision on its own, not
+  bundled into a visual pass.
+- **Derived step-state labels** (`render.ts`'s `describeInFlightStep`/`findInFlightToolCall`) — a
+  short "Running tests…"/"Searching…"/"Editing…" label for whatever tool call is actually in
+  flight right now, inferred from the real tool name and command text, shown in the REPL's working
+  indicator.
+- **Real status bar** (new `ui/StatusBar.tsx`) — real tool-call count, real test-attempt count,
+  and real `git diff --stat`-derived change stats (`checkpoint.ts`'s new
+  `workingTreeChangeSummary`/`parseShortstat`) for the run in progress, polled every 2s.
+- **`kirxil init`** — interactively scaffolds a real `.kirxil.yml` (project name, `model.default`
+  picked from the real `kirxil models` list, optional `agent.max_iterations`), asks before
+  overwriting an existing file.
+- **`kirxil sessions`** — lists real past agent runs newest-first via a new `listRuns()` client
+  method against the existing `GET /agents` endpoint (`list_agent_runs`), already used by the web
+  app's Agents page but never previously exposed from the CLI.
+- **Real test-attempt counting** (`render.ts`'s `countTestAttempts`) — counts `run_command` tool
+  calls whose command text looks like a test invocation (pytest/npm test/vitest/jest/go test/...),
+  surfaced in the status bar and in `runOnce.ts`'s final summary line — a real count over real
+  commands, not a fabricated self-healing-loop attempt counter.
+- **`kirxil plan` gets a bordered `KIRXIL PLAN` panel** (`render.ts`'s `planPanelLines`, new
+  `ui/PlanPanel.tsx`) around the model's real plan text, plus a real follow-up: in a real terminal
+  only (never piped/scripted), pressing Enter after a completed plan runs `kirxil build` with that
+  exact same goal; anything else skips. `/plan <goal>` does the same inside the interactive REPL.
+  Genuine chaining of two commands that already existed independently — not a new planning engine.
+
+**Explicitly not built, and why** (unchanged from the plan): the multi-agent orchestrator tree and
+swarm mode (one real agent loop, no independently-running named agents to render), `kirxil brain`/
+Project Brain (PRD §13, no AST/symbol/dependency indexer — separate, much larger future phase),
+`kirxil security` (no vulnerability scanner), `kirxil deploy`/`kirxil logs` (no deploy target, no
+environments, no "production" concept anywhere in this deployment), and "Always allow for
+project/session" (needs new backend policy storage).
+
+No backend changes — pure CLI-side rendering plus one new thin client method (`listRuns()`)
+against an endpoint that already existed. CLI: 84/84 tests pass (up from 62), `tsc --noEmit`
+clean. **Verified live** against the real running stack (a fresh throwaway account, same
+reasoning as every prior verification this track — the real saved session backed up and restored
+afterward): `kirxil init` in a scratch git repo (created directly under the real `HOST_ROOT`,
+`D:\`, since host.* tools can't reach outside it) round-tripped correctly through `kirxil config`;
+a real `kirxil run` goal against a real file produced a real `Edited (+1/-1)` diff showing the
+actual before/after lines, and the file's real content matched; `kirxil sessions` listed that same
+real run, matching `GET /agents` exactly. A real HIGH-risk `host.run_command` pause was also
+exercised through the restyled panel — it showed the real risk level, paused for a real `y`/`n`,
+and resumed the run correctly after approval, ending in a real final response. A real
+`kirxil plan` goal produced a real bordered panel around the model's actual multi-step plan text.
+
+One piece **not** independently live-verified end to end: the plan → `[Enter]` → `kirxil build`
+handoff itself. It's gated on `process.stdin.isTTY`, correctly and cleanly (confirmed live — no
+hang, clean exit) skipped when driven from a piped child process, since neither this sandbox's
+shell nor `winpty` can present a real TTY to a non-interactively-launched process here. The
+handoff's own execution path is a second call into the exact same `runGoalOnce` already exercised
+successfully above (the HIGH-risk approval run), so it isn't untested logic — just wiring this
+environment couldn't drive through a real keypress. Worth a real human check in an actual
+terminal before leaning on it.
