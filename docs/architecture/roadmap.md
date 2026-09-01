@@ -182,3 +182,243 @@ a real bug fix (`code.run_command`/`host.run_command`'s `timeout_seconds` upper 
 requests instead of letting the existing clamp handle them). See `coding-agent.md`'s "Stronger
 coding skills" section, including an honest, live-verified limit this did *not* fix: multi-step
 goals can still make the small local model narrate a fabricated plan instead of calling real tools.
+
+**Code page redesign — Claude Code look and feel (done, 2026-09-01).** User asked for the Code
+page's UI and behavior to resemble Claude Code as closely as reasonable, explicitly keeping the
+earlier no-approval decision for `code.*`/`host.*` tools unchanged. The functional centerpiece:
+`POST /agents/run` no longer blocks for the whole loop — it now runs as a background task that
+commits each step as it happens, so the frontend polls and renders the transcript live, step by
+step, instead of showing nothing until one final result lands up to two minutes later. Frontend
+tool-call/result rendering rewritten into compact, collapsible, monospace cards closer to Claude
+Code's own tool feed. A real race this exposed (a goal submitted right after page load could get
+silently wiped from view by a slower, already-in-flight history fetch) was caught live and fixed.
+See `coding-agent.md`'s "Live, step-by-step transcript" section for the full account.
+
+**Code page redesign, round two — a real "esc to interrupt," and closer visual fidelity (done,
+2026-09-01).** First pass wasn't convincing enough — the page still read as a generic dashboard
+around the transcript. Rewrote `StepView` again to literally match Claude Code's own `⏺ Tool(args)`
+/ `⎿ result` glyphs (no cards, no per-tool icon set), dropped the chat-bubble goal line for a plain
+`› instruction` prompt line, and rebuilt the composer as an actual prompt. Added a real "esc to
+interrupt": `POST /agents/{id}/cancel` flips a still-running row's status, and `run_agent`'s loop
+(`app/agents/runner.py`) now refreshes and checks that column every iteration, stopping between
+steps if it's been cancelled — the same "finishes the current thing, then stops" shape Claude
+Code's own interrupt has. See `coding-agent.md`'s "Round two" section for the full account
+including the live verification (cancel genuinely reaches `step_count: 0` before any tool call).
+
+**Removed the sandboxed "Workspace" mode from the Code page's UI entirely (done, 2026-09-01),** at
+the user's explicit, confirmed-understood request — the reference product has no such toggle, just
+one real environment plus a folder picker. Every new goal from this page now targets `host.*`
+(real, unsandboxed) exclusively; `code.*`/`services/sandbox-runner` are untouched, just no longer
+reachable from this page. The file-browser/upload/edit-file feature was Workspace-exclusive, so it
+went with it — re-added afterward in a narrower, real form (see below). Also added, genuinely
+functional not decorative: a real per-run model selector (`AgentRunRequest.model`, threaded
+through `run_agent`'s `provider.tool_call(**model_kwargs)` as a `model=` override, same mechanism
+Chat's own per-message model switching already used for Ollama's multiple local tags — live-
+verified by explicitly requesting `qwen2.5:7b` and getting back "I am Qwen, developed by Alibaba
+Cloud"), and a real file/photo attachment button (reuses the existing `host.write_file` upload
+endpoint the removed file browser used — picks a file, uploads it into the folder that's open, and
+tells the model to read it). The reference's other "+" menu items (slash commands, connectors,
+plugins) are shown but disabled — Krixil has no system behind any of them, so they're visibly
+inert rather than pretending to work.
+
+**New: `cli/`, a terminal client for the same coding agent (done, 2026-09-01).** User asked for a
+"powerful CLI like Blackbox and others." Not a second implementation of the agent loop — a Python
+package (`pip install -e .`, real `krixil` command) that's purely a client of the exact same
+`POST /agents/run`/`GET /agents/{id}/status`/`POST /agents/{id}/cancel` the web Code page uses,
+rendering the identical `⏺`/`⎿` transcript in the terminal via `rich` (`cli/krixil_cli/render.py`
+is a direct port of `step-view.tsx`'s logic). `krixil login` stores a session in
+`~/.krixil/credentials.json`; `krixil` alone drops into an interactive loop scoped to whichever
+real folder it's launched from (computed relative to a configured `HOST_ROOT`, the "operates where
+you're standing" feel a real terminal coding agent has); `krixil run "<goal>"` is the scripted
+one-shot form. `Ctrl+C` maps to the same cancel endpoint the web's "esc to interrupt" does. Live-
+verified end to end from a real folder on the user's machine: a real `host.list_files` call
+rendering correctly, a real file write+read round-trip, explicit model selection actually changing
+which model answered — and, unprompted, the same known `llama3.1:8b` narration-instead-of-tool-
+calling limitation from earlier in this track recurred on a two-step goal, confirming the CLI
+faithfully reflects real backend behavior rather than masking it. 20 offline tests
+(`pytest-httpx`-mocked, no running backend needed), ruff/mypy clean. See `cli/README.md`.
+
+**`cli/` rebuilt in Node.js/TypeScript against a formal PRD (done, 2026-09-01).** User supplied a
+full "Kirxil AI CLI" Product Requirements Document — an Autonomous Software Engineering Platform
+vision (multi-agent orchestrator, Project Brain/AST/vector indexing, self-healing loop, browser/
+vision agents, a 15+ service plugin ecosystem, swarm mode) — asking to update the CLI against it.
+Told plainly this is a multi-year roadmap, not a session's work; user confirmed to proceed anyway
+with the PRD's own recommended first phase (§50: CLI Runtime) and MVP scope (§37), and its
+suggested CLI stack specifically (TypeScript/Node.js/Ink/Commander/Zod/execa) — replacing the
+working Python CLI (kept at `cli-python/` for reference, not deleted). The PRD's *backend* stack
+suggestion (Fastify/Postgres/BullMQ) and monorepo restructuring were deliberately not followed —
+`services/ai-service` stays Python/FastAPI, already built and tested. Full PRD text kept at
+`docs/architecture/kirxil-cli-prd.md`.
+Three real bugs surfaced by the rewrite, none from the offline suite: a genuine backend step-
+ordering bug in `list_agent_steps` (a tool_call and its observation share one step_number, and
+without a secondary sort key Postgres doesn't guarantee which comes back first — the **web app had
+this same latent bug**, just never hit it live; fixed with a `created_at` secondary sort plus a
+new regression test asserting the actual step sequence), a real cross-drive path bug in
+`dirFromCwd` (Windows `path.relative()` across drives doesn't start with `".."`, so the "outside
+HOST_ROOT" check missed it — caught by a unit test), and a real error-handling bug in `kirxil
+search` where a missing `ripgrep` binary silently printed "No matches." instead of the true
+"not installed" state. See `coding-agent.md`'s "`cli/` rebuilt in Node.js/TypeScript against a
+formal PRD" section for the full account, including the honest list of what the PRD describes that
+isn't built (Project Brain, multi-agent orchestration, self-healing, visual/browser agents, plugin
+ecosystem — all separate, much larger future phases).
+
+**Permission Engine wired end-to-end for the CLI (done, 2026-09-01).** User asked to keep working
+through the PRD. The PRD's §17 Permission Engine already existed in the backend (Phase 3, above)
+and was already used by the web app, but nothing `host.*` ever reached HIGH/CRITICAL risk, so the
+CLI never actually hit it. Bumped `host.run_command` to HIGH; fixed the real limitation that had
+kept approval off `code.*`/`host.*` tools in the first place (see `coding-agent.md`'s "Approval
+removed for `code.write_file`/`code.run_command`") — `run_agent()` could pause for approval but
+never resume, so approving just ended the run early. `run_agent` now rebuilds its message history
+from persisted steps and continues after approval (`AgentRun.model_id` persisted, migration
+`0012_agent_run_model_id`, so the resumed run keeps the same model); `kirxil` prompts for a real
+`y`/`n` in both `kirxil run` and the interactive REPL before a HIGH-risk command ever reaches
+`host-runner`. Verified live against the real stack (real Ollama, real `host-runner`): a paused
+run, a real approval that resumed the agent to a coherent second response, and a real rejection
+that left `host-runner` untouched. Also fixed live: `buildGoal` telling the model to `cd` into a
+directory it was already being passed as `host.run_command`'s own `directory` argument, which
+sometimes double-applied the path and failed. Backend 158/158 tests, CLI 27/27 tests, both
+lint/typecheck clean. See `coding-agent.md`'s "Permission Engine wired end-to-end for the CLI"
+section and `cli/README.md`'s "Permission Engine" section.
+
+**Checkpoint & Rollback for the CLI (done, 2026-09-01).** Continuing through the PRD in the same
+session. `kirxil run`/the interactive REPL now auto-commit the current directory's real changes
+(via `git`) right before a goal starts, and `kirxil undo`/`/undo` resets back to right before the
+most recent one after showing the real diff and asking for a real `y`/`n` — `kirxil checkpoint
+[message]` is the same snapshot on demand. Real `git`, not a custom undo log; scoped to git repos
+only, and `undo` only ever targets a commit kirxil itself made. Along the way, found and fixed a
+second real bug (unrelated to checkpoints): `kirxil search`'s existing "is `rg` installed" check
+didn't actually work on Windows — execa/cross-spawn falls back to `cmd.exe` for an unresolvable
+binary, producing the exact same `.failed`/exit-code-1 shape as ripgrep's own "zero matches" exit
+code, so a genuine no-match search was misreported as "not installed." Fixed with an explicit
+`where`/`which` probe before running the real search. CLI 32/32 tests (up from 27), tsc clean. See
+`coding-agent.md`'s "Checkpoint & Rollback for the CLI" section and `cli/README.md`'s "Checkpoint
+& Rollback" section.
+
+**PRD §33 command surface + `git log`/`branch` + `doctor` (done, 2026-09-01).** Continuing through
+the PRD. Added `kirxil ask/explain/analyze/generate/refactor/debug/test/review` — real goal
+templates (`cli/src/verbs.ts`) on the same pipeline `run` already uses, so each one gets the live
+transcript, the Permission Engine pause, and the pre-run checkpoint for free; `review` follows
+§28's spec (reviews `git diff`, tags findings HIGH/MEDIUM/LOW). Added `kirxil git log`/`branch`
+(§28) alongside the existing `diff`/`status`, and `kirxil doctor` (session/backend/git/rg/repo
+health checks). Real bug found live testing `doctor`: it reported an expired session as "backend
+not reachable," which is misleading — the backend was fine, only the token wasn't; fixed to
+distinguish a 401 specifically. Verified live end to end (a throwaway registered account, since
+this session's own saved token had coincidentally expired mid-session and its real password isn't
+something to guess at — the existing credentials file was backed up first and restored
+byte-for-byte after). CLI 40/40 tests (up from 32), tsc clean. See `coding-agent.md`'s "PRD §33's
+command surface" section and `cli/README.md`'s "Command surface" section.
+
+**`.kirxil.yml` project config + honest Model Router status (done, 2026-09-01).** Continuing
+through the PRD. `.kirxil.yml` (`cli/src/projectConfig.ts`, discovered by walking up like `git`
+finds `.git`) now provides `project.name`, `model.default`, and `agent.max_iterations` — a
+deliberately small slice of §34's full YAML shape. `agent.max_iterations` reaches the backend for
+real: a new `AgentRunRequest.max_steps` field, applied via `min(requested, settings.
+agent_max_steps)` in `create_agent_run` so a project can only tighten its own step budget, never
+raise it past the deployment's own ceiling. §30's Model Router (task-based auto-routing) is
+explicitly *not* built — this deployment has exactly two real local models and no benchmark data
+justifying a Reasoning/Coding/Fast/Vision/Local mapping between them, and inventing one would be a
+fabricated capability; `model.default` is the honest version. `permissions:`/`sandbox:`/`memory:`
+config and `agent.max_retries` are also deliberately not built, each for a specific reason
+documented in `coding-agent.md` (`permissions:` especially — a client-supplied file changing what
+the Permission Engine approves is a real security decision, not a side effect of "add a config
+file"). Verified live against a second throwaway account (real `.kirxil.yml`, confirmed via a
+direct backend query that the created run's `model_id`/`max_steps` genuinely came from the file,
+and that `--model` still overrides it) — the user's own saved session was never touched. Backend
+160/160 tests (up from 158), CLI 46/46 tests (up from 40), both lint/typecheck clean. See
+`coding-agent.md`'s "`.kirxil.yml` project config" section and `cli/README.md`'s "Project config"
+and "Model Router" sections.
+
+**Anthropic (Claude) model provider (done, 2026-09-01).** User asked to move off the two local
+Ollama models and use "Claude Code" and "Kimi K3" going forward. Built a real
+`AnthropicModelProvider` (`app/ai/anthropic_provider.py`, `MODEL_PROVIDER=anthropic`) against
+Anthropic's actual Messages API — genuinely not OpenAI-compatible (top-level `system` field,
+`x-api-key` auth, `tool_use` content blocks, no `/embeddings` endpoint — delegates embeddings to
+Ollama so RAG keeps working regardless of chat provider). Clarified "Claude Code" itself isn't an
+API a backend connects to — it's Anthropic's own CLI product; the real equivalent is the Claude
+API directly, which is what got built. For Kimi: Moonshot's models are documented as
+OpenAI-API-compatible, so they likely need zero new code — just `OPENAI_BASE_URL` pointed at
+Moonshot with a real key (documented in `.env.example`), not verified live since no Moonshot key
+is available; "Kimi K3" specifically isn't a name this agent can confirm exists (K1/K1.5/K2 are
+the known ones). Cannot obtain or fabricate a real API key for either provider — that requires the
+account holder's own credential from console.anthropic.com or Moonshot's platform; the code is
+real and ready, tested against 13 new tests (`test_anthropic_provider.py`, `test_ai_router.py`)
+using mocked responses, not a live call to either vendor. Backend 173/173 tests (up from 160),
+ruff/mypy clean. See `coding-agent.md`'s "A real Anthropic (Claude) model provider" section.
+
+**`edit_file` + `search_files` — closing the PRD's MVP checklist (done, 2026-09-01).** User asked
+to finish the PRD's own defined stages. §37's MVP scope named 10 items; 8 were already real, and
+the remaining two — File edit (distinct from File write) and Code search (an agent-callable tool,
+not just `kirxil search`'s local CLI passthrough) — were genuine gaps. Added `host.edit_file`/
+`code.edit_file` (a Claude-Code-style unique `old_string`→`new_string` replacement, MEDIUM risk,
+same tier as write) and `host.search_files`/`code.search_files` (real recursive regex search,
+LOW risk, stdlib-only — deliberately not a shell-out to `rg`, after `kirxil search`'s own earlier
+lesson about depending on an external binary's `PATH`). `host-runner` got a new `/search`
+endpoint and, along with it, its **first test suite ever** (13 tests) — every tool it's carried
+since the start of this track had zero coverage before this. `cli/src/goal.ts`/`render.ts`
+updated so the CLI actually tells the model these tools exist and renders their results properly
+(`Edit(path)`, `Search(pattern)`, match list). Verified live against the real stack: a real search
+match with correct line number, a real precise file edit leaving the rest of the file untouched,
+a full `kirxil run` showing the correct transcript end to end (another throwaway account used for
+this, the real session backed up and restored again). Backend 183/183 tests (up from 173),
+host-runner 13/13 (new), CLI 51/51 (up from 46), all lint/typecheck clean. This closes every item
+on the PRD's own MVP checklist — see `coding-agent.md`'s "Closing the last two MVP gaps" section
+and `kirxil-cli-prd.md`'s §37 status note.
+
+**`delete_file` + `git blame` — the last two named gaps (done, 2026-09-01).** Continuing through
+what the PRD itself flags as missing. Added `host.delete_file`/`code.delete_file` (HIGH risk,
+approval-gated — a deliberately different, higher tier than write/edit, since a delete isn't one
+more write away from being undone the way an overwrite is) and `kirxil git blame <file>` (the
+fifth real local git passthrough command). Found and fixed a real test bug along the way: two
+`test_agents.py` tests relied on `MockProvider`'s keyword-matching picking `document.delete` for
+a "please delete document {id}" goal, but `code.delete_file`'s name now shares the word "delete"
+and sorts first alphabetically — one test failed loudly, but a second
+(`test_agent_stops_waiting_approval_for_critical_tool_...`) had been silently passing while
+actually exercising the wrong tool (HIGH risk instead of CRITICAL), since its assertions weren't
+specific enough to notice. Fixed by rewording the goals to anchor on the word "document" (unique
+to that one tool) instead of the now-ambiguous "delete". Verified live: `host.delete_file` paused
+for approval and only actually deleted the file after approving (confirmed both states directly);
+`git blame` against a real tracked file in this repo's own history and a real untracked one (clear
+error, not silent emptiness). Backend 187/187 tests (up from 183), CLI 53/53 (up from 51), both
+lint/typecheck clean. See `coding-agent.md`'s "Two more real, small gaps closed" section.
+
+**`kirxil plan` + `kirxil memory` (done, 2026-09-01).** Continuing through the PRD's named gaps.
+`kirxil plan <goal>` (§19) is a 9th verb (`cli/src/verbs.ts`) — investigates, then answers as
+"PLAN" + numbered steps + a rough estimate, explicitly makes no changes; stops there rather than
+building a full plan→approve→execute state machine (an honest simplification of §19's implied
+version, not the full thing passed off as complete). `kirxil memory list/add/forget/status/on/off`
+(§33) needed zero new backend work — `app/memory/`'s long-term memory system already existed and
+was already used by the web app, this just gives the terminal a real client of it
+(`cli/src/api.ts` + a command group in `index.ts`; pulled a `requireApi()` helper out of six
+copies of the same "resolve a client or bail" shape along the way). Verified live: memory's full
+list/add/forget/status/on/off cycle against the real backend, watching each state change actually
+take effect; `plan` producing a real goal matching the PRD's PLAN format and correctly triggering
+the pipeline before the same already-documented `llama3.1:8b` multi-step-narration limitation
+took over (unrelated to `plan` itself). CLI 59/59 tests (up from 53), tsc clean; backend
+unchanged (no new endpoints needed). See `coding-agent.md`'s "Plan Mode and `memory`" section.
+
+**`kirxil config` (done, 2026-09-01).** Last easy §33 gap closed. `.kirxil.yml` had real logic
+(`cli/src/projectConfig.ts`) but no way to see what it actually resolved to short of reading the
+raw file and re-deriving the fallback rules by hand. `kirxil config` shows which file was found
+(if any) and each field's effective value with a plain-language fallback description when unset —
+pure CLI-side, reusing `loadProjectConfig` as-is, no new backend surface. Verified live in both
+states (no config file anywhere up the tree; a real file found correctly from two directories
+below where it actually lives). CLI 61/61 tests (up from 59), tsc clean. This is the last of
+§33's command-surface gaps closeable without new infrastructure — 14 of 22 real now. What's left
+(`build`/`agent`/`swarm`/`deploy`/`monitor`/`project`/`plugin`) each need something this
+deployment genuinely doesn't have. See `coding-agent.md`'s "`kirxil config`" section.
+
+**`kirxil build` (done, 2026-09-01) — one more §33 item turned out closeable after all.** `build`
+had looked like it needed real infrastructure like `deploy`/`monitor`/`agent`/`swarm`; on a
+second look it's the same goal-template shape every verb already uses, just instructed to work
+through all four of §20's phases (Plan/Implement/Test/Review) explicitly in one run, including
+fixing and re-running a genuinely failing test rather than reporting it. Also determined §21 Auto
+Mode needs no `--auto` flag at all — its own spec (autonomous, but HIGH-risk still needs approval,
+nothing gets auto-blocked) already describes the CLI's real default behavior exactly; a flag would
+toggle nothing real, so this was documented as closed by observation rather than shipped as a
+cosmetic command. Verified live (a fourth throwaway account, real session backed up and restored
+again): the goal text matched the four-phase template correctly and the run reached the backend
+and completed, but made zero real tool calls this attempt (confirmed via the run's own API
+record, not the printed transcript) — the same already-documented `llama3.1:8b` multi-step
+narration limitation from earlier in this track, named plainly rather than glossed over. CLI
+15/22 of §33 now real. 62/62 CLI tests (up from 61), tsc clean. See `coding-agent.md`'s
+"`kirxil build` (§20) and an honest look at `--auto` (§21)" section.

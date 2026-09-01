@@ -16,7 +16,8 @@ trade-offs behind each one.
 | Postgres, Redis, MinIO | Database, cache, object storage | Docker Compose | Yes |
 | Prometheus, Grafana, Jaeger | Metrics/dashboards/traces | Docker Compose | No — observability only |
 | Ollama | Local model runtime (chat + embeddings) | Native, installed separately | No — a `mock` provider needs no setup, but gives canned answers |
-| `services/host-runner` | Real, unsandboxed access to a folder on this machine for the coding agent's "This Computer" mode | Native (`uvicorn`) | No — optional |
+| `services/host-runner` | Real, unsandboxed access to a folder on this machine — what the coding agent (web and CLI both) actually runs against | Native (`uvicorn`) | Yes, for the coding agent |
+| `cli/` | `kirxil` — a terminal client for the same coding agent the web app's Code page uses | Native (Node.js, `npm install && npm run build`) | No — optional, alternative to the web UI |
 | `training/` | Autonomous fine-tuning scheduler | Native (`python`) | No — optional |
 
 Everything in the "Docker Compose" row comes up together with one command. Everything marked
@@ -122,7 +123,16 @@ Set `MODEL_PROVIDER` in `services\ai-service\.env`:
   changes. Rebuild/restart the `api` container after editing `.env`:
   `docker compose $envFile -f infrastructure\compose\docker-compose.yml up -d --build api`.
 - **`openai`** — any OpenAI-compatible endpoint (OpenAI itself, OpenRouter, a self-hosted vLLM
-  server). Set `OPENAI_API_KEY` (and `OPENAI_BASE_URL` if not using OpenAI directly).
+  server, or Moonshot's Kimi models — their API is documented as OpenAI-compatible, so this needs
+  no separate provider, just `OPENAI_BASE_URL=https://api.moonshot.ai/v1` and a real Moonshot key;
+  not verified live here, no Moonshot key available to test with). Set `OPENAI_API_KEY` (and
+  `OPENAI_BASE_URL` if not using OpenAI directly).
+- **`anthropic`** — real Claude models via Anthropic's own Messages API (not an OpenAI-compatible
+  endpoint — a separate provider, `services/ai-service/app/ai/anthropic_provider.py`). Set
+  `ANTHROPIC_API_KEY` (from [console.anthropic.com](https://console.anthropic.com)) and
+  `ANTHROPIC_MODEL` (defaults to `claude-sonnet-5`). Anthropic has no embeddings endpoint, so RAG/
+  knowledge search still uses Ollama's embedding model regardless — `OLLAMA_BASE_URL`/
+  `OLLAMA_EMBEDDING_MODEL` need to stay set and reachable even when Anthropic is the chat provider.
 
 See [`docs/architecture/self-hosted-model.md`](docs/architecture/self-hosted-model.md) for the
 full Ollama integration design.
@@ -148,13 +158,12 @@ docker compose $envFile -f infrastructure\compose\docker-compose.yml up -d --bui
 ```
 Frontend changes hot-reload automatically via `npm run dev`.
 
-## Optional: "This Computer" mode for the coding agent
+## The coding agent — real, unsandboxed access via host-runner
 
-By default the Code page's coding agent works in an isolated, network-disabled sandbox
-(`code.*` tools). "This Computer" mode gives it real, unsandboxed read/write/execute access to a
-folder on your actual machine (`host.*` tools) — **read
-[`services/host-runner/README.md`](services/host-runner/README.md) before enabling this**, it has
-no approval step and no sandbox.
+The Code page (web) and `krixil` (CLI, below) both drive the same coding agent, and both need
+`host-runner` running — **read [`services/host-runner/README.md`](services/host-runner/README.md)
+first**, it has no approval step and no sandbox: real read/write/execute access to a folder on
+your actual machine.
 
 ```powershell
 cd services\host-runner
@@ -165,8 +174,33 @@ Copy-Item .env.example .env   # edit HOST_ROOT if you want narrower than the def
 .venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8002
 ```
 
-Leave this running in its own terminal while using "This Computer" mode. The sandboxed "Workspace"
-mode (default) works fine without it.
+Leave this running in its own terminal whenever you're using the coding agent, either interface.
+The sandboxed `code.*` tools this originally sat alongside (an isolated, network-disabled
+container, no real machine access) still exist in `services/sandbox-runner` and are unaffected by
+any of this — just not wired into either the web Code page or the CLI anymore, per the trade-off
+recorded in `docs/architecture/coding-agent.md`.
+
+## Optional: `kirxil`, a terminal coding agent
+
+```powershell
+cd cli
+npm install
+npm run build
+npm link       # installs the real `kirxil` command globally
+kirxil login   # once — asks for your workspace slug/email/password and your HOST_ROOT
+cd D:\some\real\project
+kirxil         # interactive; or `kirxil run "<goal>"` for one-shot/scripted use
+```
+
+Same backend, same live `⏺ Tool(args)` / `⎿ result` transcript as the web Code page, just in your
+terminal — Node.js/TypeScript/Ink, per the CLI product's own PRD
+([`docs/architecture/kirxil-cli-prd.md`](docs/architecture/kirxil-cli-prd.md), whose MVP scope is
+now fully built). A real Permission Engine pauses for your approval before any HIGH-risk action
+(running a shell command, deleting a file); `kirxil checkpoint`/`undo` (real `git` commits) mean a
+bad run is always recoverable in a git repo. Beyond `run`, there's a real verb surface —
+`kirxil ask/explain/analyze/review/plan` (read-only), `generate/refactor/debug/test/build`, plus
+`git`, `search`, `memory`, `config`, `doctor` — see [`cli/README.md`](cli/README.md) for the full
+command list and what's built vs. not yet against that PRD.
 
 ## Optional: autonomous fine-tuning
 
@@ -200,6 +234,14 @@ npm run lint
 npx tsc --noEmit
 ```
 
+CLI (also fully offline — `fetch` is mocked, no running backend needed):
+```powershell
+cd cli
+npm install
+npm test
+npm run typecheck
+```
+
 ## AI evaluation harness
 
 ```powershell
@@ -223,9 +265,11 @@ automated yet — there's no target host to deploy to; see `docs/architecture/ph
 
 ```
 services/ai-service/      the FastAPI backend
-services/sandbox-runner/  isolated command execution for the coding agent (the only service with Docker socket access)
-services/host-runner/     optional: real, unsandboxed access to a folder on this machine — native Windows, not Docker
+services/sandbox-runner/  isolated command execution — not currently used by either coding-agent client (see the coding agent section above), kept for a possible future sandboxed mode
+services/host-runner/     real, unsandboxed access to a folder on this machine — native Windows, not Docker; what the coding agent actually runs against now
 apps/web/                 the Next.js web UI
+cli/                      optional: `kirxil`, a terminal client for the same coding agent — Node.js/TypeScript/Ink, any OS
+cli-python/               superseded — the CLI's original Python implementation, kept for reference only
 training/                 optional: autonomous fine-tuning scheduler — native Windows, needs a GPU
 infrastructure/compose/   Docker Compose stack (api, postgres, redis, minio, prometheus, grafana, jaeger, sandbox-runner)
 docs/architecture/        design notes, trade-offs, and the roadmap for each phase
