@@ -24,10 +24,16 @@ async def test_list_tools_returns_registered_tools(client):
         "code.list_files",
         "code.read_file",
         "code.write_file",
+        "code.edit_file",
+        "code.search_files",
+        "code.delete_file",
         "code.run_command",
         "host.list_files",
         "host.read_file",
         "host.write_file",
+        "host.edit_file",
+        "host.search_files",
+        "host.delete_file",
         "host.run_command",
     }
 

@@ -121,7 +121,9 @@ async def _run(
     await session.flush()
 
 
-async def _resolve_paused_agent_run(session: AsyncSession, execution: ToolExecution) -> None:
+async def _resolve_paused_agent_run(
+    session: AsyncSession, execution: ToolExecution
+) -> AgentRun | None:
     """A tool call an agent run paused on (app/agents/runner.py, execution.status ==
     "pending_approval") is resolved through this generic endpoint, not by the run loop itself —
     the run loop already returned its HTTP response and isn't running anymore. Without this, the
@@ -129,7 +131,14 @@ async def _resolve_paused_agent_run(session: AsyncSession, execution: ToolExecut
     forever, even after the underlying ToolExecution genuinely completed — the Agents page kept
     showing "Waiting on your approval" indefinitely with no way to see the real result (caught
     live: approved a real code.run_command, the sandbox ran it, but the UI never reflected it).
-    Mirrors what run_agent() itself writes for a normal (non-paused) tool completion."""
+    Mirrors what run_agent() itself writes for a normal (non-paused) tool completion.
+
+    Returns the AgentRun to resume (app/tools/router.py schedules a background continuation of
+    run_agent(resume=True) on it) when the approved tool actually ran — a real Permission Engine
+    has to let the agent keep working after a HIGH-risk step is approved, not just hand back that
+    one tool's result and quit. A rejection or a failed approved tool still ends the run: there's
+    nothing useful to resume with (rejected) or the same failure would likely just repeat
+    (failed) — either way returns None so the caller doesn't schedule anything."""
     agent_run = (
         await session.execute(
             select(AgentRun).where(
@@ -139,7 +148,7 @@ async def _resolve_paused_agent_run(session: AsyncSession, execution: ToolExecut
         )
     ).scalar_one_or_none()
     if agent_run is None:
-        return
+        return None
 
     last_step = (
         await session.execute(
@@ -150,22 +159,26 @@ async def _resolve_paused_agent_run(session: AsyncSession, execution: ToolExecut
         )
     ).scalar_one_or_none()
 
+    resume_target: AgentRun | None = None
     if execution.status == "completed":
-        agent_run.status = "completed"
+        agent_run.status = "running"
+        resume_target = agent_run
         result_content = execution.output or {}
     elif execution.status == "rejected":
         agent_run.status = "stopped"
+        agent_run.completed_at = datetime.now(UTC)
         result_content = {"rejected": True, "reason": execution.error_message}
     else:
         agent_run.status = "failed"
         agent_run.error_message = execution.error_message
+        agent_run.completed_at = datetime.now(UTC)
         result_content = {"error": execution.error_message or "unknown error"}
 
     if last_step is not None and last_step.type == "observation":
         last_step.content = result_content
     agent_run.pending_execution_id = None
-    agent_run.completed_at = datetime.now(UTC)
     await session.flush()
+    return resume_target
 
 
 async def get_execution_or_404(
@@ -199,7 +212,7 @@ async def list_executions(
 
 async def approve_execution(
     session: AsyncSession, tenant_ctx: TenantContext, execution_id: uuid.UUID
-) -> ToolExecution:
+) -> tuple[ToolExecution, AgentRun | None]:
     if not tenant_ctx.has_permission("tools:approve"):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN, detail="Missing 'tools:approve' permission"
@@ -221,8 +234,8 @@ async def approve_execution(
     await session.flush()
 
     await _run(session, tenant_ctx, tool, execution, validated_input)
-    await _resolve_paused_agent_run(session, execution)
-    return execution
+    resume_target = await _resolve_paused_agent_run(session, execution)
+    return execution, resume_target
 
 
 async def reject_execution(
@@ -252,5 +265,6 @@ async def reject_execution(
         metadata={"execution_id": str(execution.id), "reason": reason},
     )
     await session.flush()
+    # Rejection never resumes the run — see _resolve_paused_agent_run's docstring.
     await _resolve_paused_agent_run(session, execution)
     return execution

@@ -77,6 +77,9 @@ async def override_dependencies(session_factory, monkeypatch):
     # its own session directly, entirely detached from any request's Depends(get_session) — same
     # reason it needs its own patch target here too.
     monkeypatch.setattr("app.memory.long_term.AsyncSessionLocal", session_factory)
+    # _run_agent_in_background (app/agents/router.py) runs the whole agent loop off the request
+    # entirely now, on its own session — same reason as the two patches above.
+    monkeypatch.setattr("app.agents.router.AsyncSessionLocal", session_factory)
 
     yield
 

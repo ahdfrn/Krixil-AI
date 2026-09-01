@@ -1,6 +1,6 @@
 import uuid
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, BackgroundTasks, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_session
@@ -66,10 +66,31 @@ async def get_execution(
 @router.post("/tools/executions/{execution_id}/approve", response_model=ToolExecutionOut)
 async def approve(
     execution_id: uuid.UUID,
+    background_tasks: BackgroundTasks,
     tenant_ctx: TenantContext = Depends(get_tenant_context),
     session: AsyncSession = Depends(get_session),
 ) -> ToolExecutionOut:
-    execution = await approve_execution(session, tenant_ctx, execution_id)
+    execution, resume_target = await approve_execution(session, tenant_ctx, execution_id)
+    # Same reasoning as app/agents/router.py's own commit-before-background-task: the resumed
+    # run opens its own session in a separate background task, so it needs this approval genuinely
+    # committed, not just flushed within this request's still-open transaction, before it starts.
+    await session.commit()
+    if resume_target is not None:
+        # Local import — app/agents/router.py already imports from app/tools/service.py
+        # (indirectly, via app/agents/runner.py), so importing it back at module load time here
+        # would be circular. Only needed on the one path that actually resumes a run.
+        from app.agents.router import run_agent_in_background
+
+        background_tasks.add_task(
+            run_agent_in_background,
+            tenant_ctx.tenant_id,
+            tenant_ctx.user_id,
+            tenant_ctx.role,
+            tenant_ctx.permissions,
+            resume_target.id,
+            resume_target.model_id,
+            resume=True,
+        )
     return ToolExecutionOut.model_validate(execution)
 
 

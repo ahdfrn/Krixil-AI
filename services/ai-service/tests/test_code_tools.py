@@ -136,3 +136,171 @@ async def test_run_command_reports_sandbox_runner_failure(client, monkeypatch, t
 
     assert execute_resp.status_code == 200
     assert execute_resp.json()["status"] == "failed"
+
+
+async def test_edit_file_replaces_the_unique_occurrence(client, monkeypatch, tmp_path):
+    await _override_workspace_root(monkeypatch, tmp_path)
+    registered = await register(client)
+    headers = auth_headers(registered["access_token"])
+
+    await client.post(
+        "/api/v1/tools/code.write_file/execute",
+        json={"path": "app.py", "content": "def divide(a, b):\n    return a / b\n"},
+        headers=headers,
+    )
+
+    edit_resp = await client.post(
+        "/api/v1/tools/code.edit_file/execute",
+        json={
+            "path": "app.py",
+            "old_string": "return a / b",
+            "new_string": "if b == 0:\n        raise ValueError('nope')\n    return a / b",
+        },
+        headers=headers,
+    )
+    assert edit_resp.status_code == 200
+    edit_body = edit_resp.json()
+    assert edit_body["status"] == "completed"
+    assert edit_body["risk_level"] == "medium"
+
+    read_resp = await client.post(
+        "/api/v1/tools/code.read_file/execute", json={"path": "app.py"}, headers=headers
+    )
+    assert read_resp.json()["output"]["content"] == (
+        "def divide(a, b):\n    if b == 0:\n        raise ValueError('nope')\n    return a / b\n"
+    )
+
+
+async def test_edit_file_fails_clearly_when_old_string_is_ambiguous(client, monkeypatch, tmp_path):
+    await _override_workspace_root(monkeypatch, tmp_path)
+    registered = await register(client)
+    headers = auth_headers(registered["access_token"])
+
+    await client.post(
+        "/api/v1/tools/code.write_file/execute",
+        json={"path": "app.py", "content": "x = 1\nx = 1\n"},
+        headers=headers,
+    )
+
+    edit_resp = await client.post(
+        "/api/v1/tools/code.edit_file/execute",
+        json={"path": "app.py", "old_string": "x = 1", "new_string": "x = 2"},
+        headers=headers,
+    )
+    assert edit_resp.status_code == 200
+    body = edit_resp.json()
+    assert body["status"] == "failed"
+    assert "appears 2 times" in body["error_message"]
+
+
+async def test_edit_file_fails_clearly_when_file_does_not_exist(client, monkeypatch, tmp_path):
+    await _override_workspace_root(monkeypatch, tmp_path)
+    registered = await register(client)
+    headers = auth_headers(registered["access_token"])
+
+    resp = await client.post(
+        "/api/v1/tools/code.edit_file/execute",
+        json={"path": "missing.py", "old_string": "x", "new_string": "y"},
+        headers=headers,
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "failed"
+    assert "does not exist" in body["error_message"]
+
+
+async def test_search_files_finds_a_real_match(client, monkeypatch, tmp_path):
+    await _override_workspace_root(monkeypatch, tmp_path)
+    registered = await register(client)
+    headers = auth_headers(registered["access_token"])
+
+    await client.post(
+        "/api/v1/tools/code.write_file/execute",
+        json={"path": "src/app.py", "content": "def handler():\n    pass\n"},
+        headers=headers,
+    )
+
+    resp = await client.post(
+        "/api/v1/tools/code.search_files/execute",
+        json={"pattern": "def handler"},
+        headers=headers,
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "completed"
+    assert body["risk_level"] == "low"
+    assert body["output"]["results"] == [
+        {"path": "src/app.py", "line_number": 1, "line": "def handler():"}
+    ]
+
+
+async def test_search_files_surfaces_an_invalid_pattern_error(client, monkeypatch, tmp_path):
+    await _override_workspace_root(monkeypatch, tmp_path)
+    registered = await register(client)
+    headers = auth_headers(registered["access_token"])
+
+    resp = await client.post(
+        "/api/v1/tools/code.search_files/execute",
+        json={"pattern": "(unclosed"},
+        headers=headers,
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "failed"
+    assert "Invalid search pattern" in body["error_message"]
+
+
+async def test_delete_file_requires_approval_then_actually_deletes_it(
+    client, monkeypatch, tmp_path
+):
+    await _override_workspace_root(monkeypatch, tmp_path)
+    registered = await register(client)
+    headers = auth_headers(registered["access_token"])
+
+    await client.post(
+        "/api/v1/tools/code.write_file/execute",
+        json={"path": "scratch.py", "content": "x = 1\n"},
+        headers=headers,
+    )
+
+    delete_resp = await client.post(
+        "/api/v1/tools/code.delete_file/execute", json={"path": "scratch.py"}, headers=headers
+    )
+    assert delete_resp.status_code == 200
+    delete_body = delete_resp.json()
+    assert delete_body["risk_level"] == "high"
+    assert delete_body["status"] == "pending_approval"
+
+    approve_resp = await client.post(
+        f"/api/v1/tools/executions/{delete_body['id']}/approve", headers=headers
+    )
+    assert approve_resp.json()["output"] == {"path": "scratch.py", "deleted": True}
+
+    read_resp = await client.post(
+        "/api/v1/tools/code.read_file/execute", json={"path": "scratch.py"}, headers=headers
+    )
+    assert read_resp.json()["status"] == "failed"
+
+
+async def test_delete_file_rejects_a_directory(client, monkeypatch, tmp_path):
+    await _override_workspace_root(monkeypatch, tmp_path)
+    registered = await register(client)
+    headers = auth_headers(registered["access_token"])
+
+    await client.post(
+        "/api/v1/tools/code.write_file/execute",
+        json={"path": "a_dir/inside.py", "content": "x = 1\n"},
+        headers=headers,
+    )
+
+    delete_resp = await client.post(
+        "/api/v1/tools/code.delete_file/execute", json={"path": "a_dir"}, headers=headers
+    )
+    execution_id = delete_resp.json()["id"]
+
+    approve_resp = await client.post(
+        f"/api/v1/tools/executions/{execution_id}/approve", headers=headers
+    )
+    approved_body = approve_resp.json()
+    assert approved_body["status"] == "failed"
+    assert "is a directory" in approved_body["error_message"]

@@ -10,14 +10,26 @@ from app.models.agent_step import AgentStep
 from app.tenancy.context import TenantContext
 
 
-async def create_agent_run(session: AsyncSession, tenant_ctx: TenantContext, goal: str) -> AgentRun:
+async def create_agent_run(
+    session: AsyncSession,
+    tenant_ctx: TenantContext,
+    goal: str,
+    model_id: str | None = None,
+    max_steps: int | None = None,
+) -> AgentRun:
     settings = get_settings()
+    # min(), not a straight override — a client-requested budget can only ever be tighter than
+    # the deployment's own configured ceiling, never looser (see AgentRunRequest.max_steps).
+    effective_max_steps = (
+        settings.agent_max_steps if max_steps is None else min(max_steps, settings.agent_max_steps)
+    )
     agent_run = AgentRun(
         tenant_id=tenant_ctx.tenant_id,
         user_id=tenant_ctx.user_id,
         goal=goal,
         status="running",
-        max_steps=settings.agent_max_steps,
+        model_id=model_id,
+        max_steps=effective_max_steps,
         max_tool_calls=settings.agent_max_tool_calls,
         max_execution_seconds=settings.agent_max_execution_seconds,
     )
@@ -47,7 +59,16 @@ async def list_agent_steps(
     result = await session.execute(
         select(AgentStep)
         .where(AgentStep.tenant_id == tenant_ctx.tenant_id, AgentStep.agent_run_id == agent_run_id)
-        .order_by(AgentStep.step_number.asc())
+        # step_number alone isn't a stable order — a tool_call and its observation share one
+        # loop iteration's step_number (by design, see app/agents/runner.py), and without a
+        # secondary key Postgres is free to return the two in either order. Real bug, caught live
+        # via the CLI's transcript printing an observation before the tool_call that produced it
+        # (confirmed by querying this exact endpoint directly: the API itself returned them
+        # swapped, not a client-side rendering bug). created_at is µs-resolution and Python-side
+        # (see TimestampMixin), assigned when each step is committed — since round two's
+        # _record_step now commits per step individually, tool_call and observation are always
+        # genuinely sequential commits, so this is a real, reliable tiebreaker, not a coincidence.
+        .order_by(AgentStep.step_number.asc(), AgentStep.created_at.asc())
     )
     return list(result.scalars().all())
 

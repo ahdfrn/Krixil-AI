@@ -52,6 +52,8 @@ async def get_model_catalog(settings: Settings | None = None) -> list[ModelOut]:
         description = (
             f"Routes to {settings.openai_model} via the configured OpenAI-compatible endpoint."
         )
+    elif settings.model_provider == "anthropic":
+        description = f"Routes to {settings.anthropic_model} via the Anthropic API."
     else:
         description = (
             "Routes to Krixil's deterministic mock provider — no API key configured, "

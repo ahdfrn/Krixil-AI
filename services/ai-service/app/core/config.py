@@ -43,6 +43,18 @@ class Settings(BaseSettings):
     openai_model: str = "gpt-4o-mini"
     openai_embedding_model: str = "text-embedding-3-small"
 
+    # Anthropic's real Messages API — NOT OpenAI-compatible (no /chat/completions, system is a
+    # top-level field rather than a message, tool results/tool_use are content blocks, auth is
+    # x-api-key not Bearer), so this is its own provider (app/ai/anthropic_provider.py), not
+    # CloudModelProvider pointed at a different base_url. Anthropic has no embeddings endpoint at
+    # all — AnthropicModelProvider.embeddings() calls Ollama's directly instead (see that file),
+    # so RAG/knowledge search keeps working even when MODEL_PROVIDER=anthropic.
+    anthropic_api_key: str = ""
+    anthropic_base_url: str = "https://api.anthropic.com/v1"
+    anthropic_model: str = "claude-sonnet-5"
+    anthropic_api_version: str = "2023-06-01"
+    anthropic_max_tokens: int = 4096
+
     # A local Ollama instance, reached over its own OpenAI-compatible endpoint — same
     # CloudModelProvider class as "openai" above, just pointed elsewhere with its own config so
     # real OpenAI-cloud settings stay untouched. host.docker.internal is correct when the api

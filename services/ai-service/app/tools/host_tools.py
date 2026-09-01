@@ -126,7 +126,8 @@ register_tool(
         name="host.write_file",
         description="Create or overwrite a real file under HOST_ROOT on the machine Krixil runs "
         "on. No sandbox, no approval — this really changes a file on disk. Destructive if the "
-        "file already exists.",
+        "file already exists. For changing part of an existing file, prefer host.edit_file — "
+        "it's a precise, reviewable change instead of reproducing the whole file from memory.",
         input_model=HostWriteFileInput,
         # MEDIUM, not CRITICAL/approval-gated — matches the deliberate choice already made for
         # the sandboxed code.* tools (see app/tools/code_tools.py), extended here even though
@@ -135,6 +136,103 @@ register_tool(
         risk_level=RiskLevel.MEDIUM,
         required_permission="host:write",
         handler=_host_write_file_handler,
+    )
+)
+
+
+class HostEditFileInput(BaseModel):
+    path: str = Field(min_length=1, max_length=1000)
+    old_string: str = Field(min_length=1, max_length=500_000)
+    new_string: str = Field(max_length=500_000)
+
+
+async def _host_edit_file_handler(
+    session: AsyncSession, tenant_ctx: TenantContext, params: HostEditFileInput
+) -> dict:
+    settings = get_settings()
+    try:
+        async with httpx.AsyncClient(timeout=settings.host_runner_timeout_seconds) as client:
+            read_response = await client.get(
+                f"{settings.host_runner_url}/files/content", params={"path": params.path}
+            )
+    except httpx.ConnectError as exc:
+        raise ValueError(_UNREACHABLE_MESSAGE) from exc
+    _raise_for_status_with_detail(read_response)
+    content = read_response.json()["content"]
+
+    occurrences = content.count(params.old_string)
+    if occurrences == 0:
+        raise ValueError(
+            f"old_string not found in '{params.path}' — read the file first and copy the exact "
+            "text, including whitespace."
+        )
+    if occurrences > 1:
+        raise ValueError(
+            f"old_string appears {occurrences} times in '{params.path}' — include more "
+            "surrounding context so it uniquely identifies one location."
+        )
+
+    new_content = content.replace(params.old_string, params.new_string, 1)
+    try:
+        async with httpx.AsyncClient(timeout=settings.host_runner_timeout_seconds) as client:
+            write_response = await client.post(
+                f"{settings.host_runner_url}/files",
+                json={"path": params.path, "content": new_content},
+            )
+    except httpx.ConnectError as exc:
+        raise ValueError(_UNREACHABLE_MESSAGE) from exc
+    _raise_for_status_with_detail(write_response)
+    return {"path": params.path, "edited": True}
+
+
+register_tool(
+    Tool(
+        name="host.edit_file",
+        description="Replace one exact, unique occurrence of old_string with new_string in a "
+        "real file under HOST_ROOT — a precise, surgical change instead of rewriting the whole "
+        "file (host.write_file). old_string must appear exactly once in the file (read it first "
+        "to copy the exact text) or this fails with a clear error rather than guessing which "
+        "occurrence you meant.",
+        input_model=HostEditFileInput,
+        # Same tier as host.write_file — a file mutation either way, see that tool's own comment.
+        risk_level=RiskLevel.MEDIUM,
+        required_permission="host:write",
+        handler=_host_edit_file_handler,
+    )
+)
+
+
+class HostSearchFilesInput(BaseModel):
+    pattern: str = Field(min_length=1, max_length=500)
+    path: str = Field(default=".", max_length=1000)
+
+
+async def _host_search_files_handler(
+    session: AsyncSession, tenant_ctx: TenantContext, params: HostSearchFilesInput
+) -> dict:
+    settings = get_settings()
+    try:
+        async with httpx.AsyncClient(timeout=settings.host_runner_timeout_seconds) as client:
+            response = await client.get(
+                f"{settings.host_runner_url}/search",
+                params={"pattern": params.pattern, "path": params.path},
+            )
+    except httpx.ConnectError as exc:
+        raise ValueError(_UNREACHABLE_MESSAGE) from exc
+    _raise_for_status_with_detail(response)
+    return {"results": response.json()}
+
+
+register_tool(
+    Tool(
+        name="host.search_files",
+        description="Search real files under HOST_ROOT for a regex pattern, recursively — real "
+        "matches with path and line number, not a directory listing you'd have to read through "
+        "yourself. Skips node_modules/.git/venv/binary files. Capped at 200 results.",
+        input_model=HostSearchFilesInput,
+        risk_level=RiskLevel.LOW,
+        required_permission="host:read",
+        handler=_host_search_files_handler,
     )
 )
 
@@ -173,12 +271,63 @@ register_tool(
     Tool(
         name="host.run_command",
         description="Run a shell command for real on the machine Krixil runs on, under HOST_ROOT "
-        "— no sandbox, no network restriction, no approval. Uses whatever is actually installed "
-        "on this machine (the real Python, git, node, PATH). Returns stdout, stderr, exit code.",
+        "— no sandbox, no network restriction. Uses whatever is actually installed on this "
+        "machine (the real Python, git, node, PATH). Returns stdout, stderr, exit code. "
+        "HIGH risk — an agent run pauses and waits for a human to approve or reject the exact "
+        "command before it executes (see app/tools/base.py's APPROVAL_REQUIRED_LEVELS and "
+        "app/agents/runner.py).",
         input_model=HostRunCommandInput,
-        risk_level=RiskLevel.MEDIUM,
+        # HIGH, unlike host.write_file's deliberate MEDIUM (see that tool's own comment) —
+        # arbitrary shell execution is a strictly bigger blast radius than writing one file
+        # (it can delete, network-call, or write anything write_file could and more), and it's
+        # the PRD's own example of a HIGH-risk action (docs/architecture/kirxil-cli-prd.md §17).
+        # This is what actually makes the Permission Engine real for the CLI/host path — before
+        # this, nothing host.* ever reached RiskLevel.HIGH, so pending_approval never fired here.
+        risk_level=RiskLevel.HIGH,
         required_permission="host:execute",
         handler=_host_run_command_handler,
         timeout_seconds=320.0,
+    )
+)
+
+
+class HostDeleteFileInput(BaseModel):
+    path: str = Field(min_length=1, max_length=1000)
+
+
+async def _host_delete_file_handler(
+    session: AsyncSession, tenant_ctx: TenantContext, params: HostDeleteFileInput
+) -> dict:
+    settings = get_settings()
+    try:
+        async with httpx.AsyncClient(timeout=settings.host_runner_timeout_seconds) as client:
+            response = await client.delete(
+                f"{settings.host_runner_url}/files", params={"path": params.path}
+            )
+    except httpx.ConnectError as exc:
+        raise ValueError(_UNREACHABLE_MESSAGE) from exc
+    _raise_for_status_with_detail(response)
+    return {"path": params.path, "deleted": True}
+
+
+register_tool(
+    Tool(
+        name="host.delete_file",
+        description="Permanently delete a real file under HOST_ROOT on the machine Krixil runs "
+        "on. Cannot delete a directory. HIGH risk — an agent run pauses and waits for a human to "
+        "approve or reject the exact path before it deletes anything (same mechanism as "
+        "host.run_command). If the current directory is a git repo, `kirxil run`/the interactive "
+        "REPL already checkpointed it before this run started (cli/src/checkpoint.ts) — "
+        "`kirxil undo` can still get a deleted file back either way.",
+        input_model=HostDeleteFileInput,
+        # HIGH, not MEDIUM like write_file/edit_file — deletion is a strictly different kind of
+        # destructive than overwriting or editing: a write/edit's previous content is still one
+        # more write/edit away from being restored (the model can just put it back if asked), but
+        # a deleted file is actually gone from this tool's own perspective — the only way back is
+        # the checkpoint safety net, not this tool undoing itself. Matches host.run_command's
+        # tier and reasoning: a bigger, less-reversible blast radius earns a human in the loop.
+        risk_level=RiskLevel.HIGH,
+        required_permission="host:write",
+        handler=_host_delete_file_handler,
     )
 )

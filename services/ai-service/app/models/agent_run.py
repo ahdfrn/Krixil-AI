@@ -19,8 +19,13 @@ class AgentRun(UUIDPKMixin, TimestampMixin, Base):
         GUID(), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
     goal: Mapped[str] = mapped_column(Text, nullable=False)
-    # "running" | "completed" | "stopped" | "waiting_approval" | "failed"
+    # "running" | "completed" | "stopped" | "waiting_approval" | "failed" | "cancelled"
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="running")
+    # None/"auto" mean "provider's configured default" (see AgentRunRequest.model). Persisted
+    # (unlike before) so a run that pauses on approval can resume on the same model it started
+    # on — the background task that resumes it (app/tools/service.py's approve path) has no
+    # access to the original request payload, only this row.
+    model_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
     max_steps: Mapped[int] = mapped_column(Integer, nullable=False)
     max_tool_calls: Mapped[int] = mapped_column(Integer, nullable=False)
     max_execution_seconds: Mapped[int] = mapped_column(Integer, nullable=False)

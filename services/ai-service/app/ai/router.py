@@ -1,13 +1,28 @@
 from collections.abc import Callable
 
+from app.ai.anthropic_provider import AnthropicModelProvider
 from app.ai.base import ModelProvider
 from app.ai.cloud_provider import CloudModelProvider
 from app.ai.mock_provider import MockProvider
 from app.core.config import get_settings
 
-# Factories, not instances: MockProvider is free to construct, but CloudModelProvider opens an
-# httpx connection pool — that only happens if "openai"/"ollama" is actually selected, and only
-# once (cached in _instances below), not for every request or at import time.
+
+def _ollama_provider() -> CloudModelProvider:
+    # Ollama needs no real API key — it ignores the Authorization header entirely, but the HTTP
+    # client still needs some non-empty value to send. Also reused as AnthropicModelProvider's
+    # embeddings backend below, since Anthropic has no embeddings endpoint of its own.
+    return CloudModelProvider(
+        name="ollama",
+        base_url=get_settings().ollama_base_url,
+        api_key="ollama",
+        model=get_settings().ollama_default_model,
+        embedding_model=get_settings().ollama_embedding_model,
+    )
+
+
+# Factories, not instances: MockProvider is free to construct, but CloudModelProvider/
+# AnthropicModelProvider open an httpx connection pool — that only happens if actually selected,
+# and only once (cached in _instances below), not for every request or at import time.
 _PROVIDER_FACTORIES: dict[str, Callable[[], ModelProvider]] = {
     "mock": lambda: MockProvider(),
     "openai": lambda: CloudModelProvider(
@@ -17,14 +32,14 @@ _PROVIDER_FACTORIES: dict[str, Callable[[], ModelProvider]] = {
         model=get_settings().openai_model,
         embedding_model=get_settings().openai_embedding_model,
     ),
-    # Ollama needs no real API key — it ignores the Authorization header entirely, but the HTTP
-    # client still needs some non-empty value to send.
-    "ollama": lambda: CloudModelProvider(
-        name="ollama",
-        base_url=get_settings().ollama_base_url,
-        api_key="ollama",
-        model=get_settings().ollama_default_model,
-        embedding_model=get_settings().ollama_embedding_model,
+    "ollama": _ollama_provider,
+    "anthropic": lambda: AnthropicModelProvider(
+        api_key=get_settings().anthropic_api_key,
+        base_url=get_settings().anthropic_base_url,
+        model=get_settings().anthropic_model,
+        api_version=get_settings().anthropic_api_version,
+        max_tokens=get_settings().anthropic_max_tokens,
+        embeddings_provider=_ollama_provider(),
     ),
 }
 
@@ -46,6 +61,9 @@ class ModelRouter:
 
         if name == "openai" and not settings.openai_api_key:
             raise ValueError("MODEL_PROVIDER=openai requires OPENAI_API_KEY to be set")
+
+        if name == "anthropic" and not settings.anthropic_api_key:
+            raise ValueError("MODEL_PROVIDER=anthropic requires ANTHROPIC_API_KEY to be set")
 
         if name not in _instances:
             _instances[name] = _PROVIDER_FACTORIES[name]()
