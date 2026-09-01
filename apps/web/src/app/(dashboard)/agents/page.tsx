@@ -1,10 +1,10 @@
 "use client";
 
 import { Bot, Check, Loader2, Search, TriangleAlert, X } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
-import { StepView } from "@/components/agent-run/step-view";
+import { StepView, WorkingIndicator } from "@/components/agent-run/step-view";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -12,12 +12,15 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import {
+  cancelAgentRun,
   getAgentRunStatus,
   listAgentRuns,
+  pollAgentRun,
   runAgent,
   type AgentRunDetailOut,
   type AgentRunOut,
   type AgentRunStatus,
+  type PollHandle,
 } from "@/lib/api/agents";
 import { ApiError } from "@/lib/api/client";
 import { approveExecution, rejectExecution } from "@/lib/api/tools";
@@ -28,6 +31,7 @@ const STATUS_VARIANT: Record<AgentRunStatus, "secondary" | "outline" | "destruct
   stopped: "outline",
   waiting_approval: "destructive",
   failed: "destructive",
+  cancelled: "outline",
 };
 
 type AgentMode = "quick" | "research";
@@ -68,6 +72,11 @@ export default function AgentsPage() {
   const [isLoadingDetail, setIsLoadingDetail] = useState(false);
   const [approvalAction, setApprovalAction] = useState<string | null>(null);
 
+  // Only one run's dialog is ever open at a time — this tracks whichever poll is currently live so
+  // opening a different run (or closing the dialog) can cancel the previous one instead of two
+  // polls racing to update state.
+  const activePoll = useRef<PollHandle | null>(null);
+
   async function loadRuns() {
     setIsLoading(true);
     try {
@@ -83,13 +92,32 @@ export default function AgentsPage() {
     // Fetch-on-mount, same pattern as the rest of this app's data loading (chat-store.ts).
     // eslint-disable-next-line react-hooks/set-state-in-effect
     void loadRuns();
+    return () => activePoll.current?.cancel();
   }, []);
+
+  // Keeps both the open dialog and the matching row in the "Past runs" list in sync with each
+  // poll tick — a run's status badge/step count behind the dialog would otherwise stay frozen at
+  // whatever it was when the dialog opened, same class of staleness the approve/reject handlers
+  // below already had to fix once.
+  function applyRunUpdate(detail: AgentRunDetailOut) {
+    setSelectedRun((prev) => (prev?.id === detail.id ? detail : prev));
+    setRuns((prev) => prev.map((r) => (r.id === detail.id ? detail : r)));
+  }
+
+  function watchRun(detail: AgentRunDetailOut) {
+    activePoll.current?.cancel();
+    setSelectedRun(detail);
+    if (detail.status === "running") {
+      activePoll.current = pollAgentRun(detail.id, applyRunUpdate);
+    }
+  }
 
   async function openRun(id: string) {
     setIsLoadingDetail(true);
     setSelectedRun(null);
+    activePoll.current?.cancel();
     try {
-      setSelectedRun(await getAgentRunStatus(id));
+      watchRun(await getAgentRunStatus(id));
     } catch (err) {
       toast.error(err instanceof ApiError ? err.message : "Couldn't load that run.");
     } finally {
@@ -106,7 +134,9 @@ export default function AgentsPage() {
       const run = await runAgent(mode === "research" ? buildResearchGoal(trimmed) : trimmed);
       setRuns((prev) => [run, ...prev]);
       setGoal("");
-      void openRun(run.id);
+      // The run is only just created at this point (status "running", no steps) — open its dialog
+      // right away and let watchRun's poll fill it in live rather than waiting for it to finish.
+      watchRun({ ...run, steps: [] });
     } catch (err) {
       toast.error(err instanceof ApiError ? err.message : "That run failed to start.");
     } finally {
@@ -149,6 +179,16 @@ export default function AgentsPage() {
       setApprovalAction(null);
       if (runId) void openRun(runId);
       void loadRuns();
+    }
+  }
+
+  async function handleCancel(runId: string) {
+    try {
+      await cancelAgentRun(runId);
+      // Doesn't kill anything itself — the loop notices on its next iteration and stops there;
+      // the poll already running for this run (watchRun) is what reflects the actual stop.
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : "Couldn't stop that run.");
     }
   }
 
@@ -195,11 +235,9 @@ export default function AgentsPage() {
             />
             <div className="flex items-center justify-between gap-3">
               <p className="text-xs text-muted-foreground">
-                {isRunning
-                  ? "Running — this can take up to two minutes."
-                  : mode === "research"
-                    ? "Searches the web (possibly more than once), then writes up a report with sources."
-                    : "Runs a full planner/executor loop within a fixed step and time budget."}
+                {mode === "research"
+                  ? "Searches the web (possibly more than once), then writes up a report with sources."
+                  : "Runs a full planner/executor loop within a fixed step and time budget — watch it work live."}
               </p>
               <Button type="submit" size="sm" disabled={isRunning || !goal.trim()} className="shrink-0">
                 {isRunning ? (
@@ -250,7 +288,14 @@ export default function AgentsPage() {
         </div>
       </div>
 
-      <Dialog open={!!selectedRun || isLoadingDetail} onOpenChange={(open) => !open && setSelectedRun(null)}>
+      <Dialog
+        open={!!selectedRun || isLoadingDetail}
+        onOpenChange={(open) => {
+          if (open) return;
+          activePoll.current?.cancel();
+          setSelectedRun(null);
+        }}
+      >
         <DialogContent className="max-w-xl">
           {isLoadingDetail || !selectedRun ? (
             <div className="flex flex-col gap-2 py-4">
@@ -264,6 +309,7 @@ export default function AgentsPage() {
               pendingApprovalId={approvalAction}
               onApprove={handleApprove}
               onReject={handleReject}
+              onCancel={() => void handleCancel(selectedRun.id)}
             />
           )}
         </DialogContent>
@@ -277,11 +323,13 @@ function RunDetail({
   pendingApprovalId,
   onApprove,
   onReject,
+  onCancel,
 }: {
   run: AgentRunDetailOut;
   pendingApprovalId: string | null;
   onApprove: (executionId: string) => void;
   onReject: (executionId: string) => void;
+  onCancel: () => void;
 }) {
   return (
     <>
@@ -292,12 +340,21 @@ function RunDetail({
         </DialogDescription>
       </DialogHeader>
 
-      <div className="scrollbar-thin flex max-h-[60vh] flex-col gap-2 overflow-y-auto">
+      <div className="scrollbar-thin flex max-h-[60vh] flex-col gap-0.5 overflow-y-auto">
         {run.steps.map((step) => (
           // step_number is the loop iteration, not a unique row id — a tool_call and its
           // observation share one iteration's number, so the pair needs to be part of the key.
           <StepView key={`${step.step_number}-${step.type}`} step={step} />
         ))}
+
+        {run.status === "running" && (
+          <WorkingIndicator
+            stepCount={run.step_count}
+            maxSteps={run.max_steps}
+            startedAt={run.created_at}
+            onStop={onCancel}
+          />
+        )}
 
         {run.status === "waiting_approval" && run.pending_execution_id && (
           <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm">
@@ -334,6 +391,10 @@ function RunDetail({
               </Button>
             </div>
           </div>
+        )}
+
+        {run.status === "cancelled" && (
+          <p className="py-1 font-mono text-xs text-muted-foreground">Stopped.</p>
         )}
 
         {run.status === "failed" && run.error_message && (

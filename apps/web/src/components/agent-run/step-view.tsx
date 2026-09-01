@@ -1,15 +1,21 @@
 "use client";
 
-import { Folder, File as FileIcon, TriangleAlert, Wrench } from "lucide-react";
+import { ChevronRight } from "lucide-react";
+import { useEffect, useState } from "react";
 
 import { MarkdownContent } from "@/components/chat/markdown-content";
 import type { AgentStepOut } from "@/lib/api/agents";
+import { cn } from "@/lib/utils";
 
 const FILE_TOOLS = new Set(["code.list_files", "host.list_files"]);
 const READ_TOOLS = new Set(["code.read_file", "host.read_file"]);
 const WRITE_TOOLS = new Set(["code.write_file", "host.write_file"]);
 const RUN_TOOLS = new Set(["code.run_command", "host.run_command"]);
 const MAX_LISTED_ENTRIES = 20;
+// Collapsed by default past this many lines — matches the "expand for the rest" pattern Claude
+// Code's own tool-output blocks use, so a full directory tree or file dump doesn't push the run's
+// final answer off screen.
+const COLLAPSE_LINE_THRESHOLD = 8;
 
 function stringArg(args: unknown, key: string): string | undefined {
   if (typeof args !== "object" || args === null) return undefined;
@@ -22,26 +28,26 @@ function summarizeToolCall(toolName: string | null, args: unknown): string {
   const command = stringArg(args, "command");
   const directory = stringArg(args, "directory");
 
-  if (toolName && FILE_TOOLS.has(toolName)) return `Listed ${path && path !== "." ? path : "files"}`;
-  if (toolName && READ_TOOLS.has(toolName)) return `Read ${path ?? "a file"}`;
-  if (toolName && WRITE_TOOLS.has(toolName)) return `Wrote ${path ?? "a file"}`;
+  if (toolName && FILE_TOOLS.has(toolName)) return `List(${path && path !== "." ? path : "."})`;
+  if (toolName && READ_TOOLS.has(toolName)) return `Read(${path ?? "?"})`;
+  if (toolName && WRITE_TOOLS.has(toolName)) return `Write(${path ?? "?"})`;
   if (toolName && RUN_TOOLS.has(toolName)) {
-    return directory && directory !== "." ? `Ran in ${directory}: ${command}` : `Ran: ${command}`;
+    return directory && directory !== "." ? `Bash(cd ${directory} && ${command})` : `Bash(${command})`;
   }
-  return `Called ${toolName}`;
+  return toolName ?? "Tool call";
 }
 
-/** Tool-call and observation steps render the raw JSON payload by default — fine for a small
- * result (e.g. usage.get_summary), unreadable for a real directory listing or file content
- * (caught live: browsing a real project folder in "This Computer" mode dumped hundreds of file
- * entries as one giant escaped-JSON blob). The code and host tool families get a proper,
- * tool-aware rendering instead; anything else still falls back to the JSON dump. */
+/** A plain-text, bulleted transcript line — "⏺ Tool(args)" with its result indented underneath
+ * behind "⎿" — is literally how Claude Code's own CLI/IDE transcript renders a tool call, no
+ * bordered cards, no per-tool icon set, just a bullet and monospace text. This intentionally
+ * drops the previous version's boxed/icon-based cards to match that shape exactly rather than
+ * approximate it. */
 export function StepView({ step }: { step: AgentStepOut }) {
   if (step.type === "tool_call") {
     return (
-      <div className="flex items-start gap-2 rounded-lg border border-border bg-secondary/30 p-2.5 text-xs">
-        <Wrench className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
-        <span className="min-w-0 break-words font-medium">
+      <div className="flex items-start gap-2 py-0.5 font-mono text-[13px] leading-relaxed">
+        <span className="mt-px shrink-0 text-primary">⏺</span>
+        <span className="min-w-0 break-words text-foreground">
           {summarizeToolCall(step.tool_name, step.content.arguments)}
         </span>
       </div>
@@ -53,19 +59,12 @@ export function StepView({ step }: { step: AgentStepOut }) {
     const isPending = content.status === "pending_approval";
     const isError = "error" in content;
 
-    if (isPending) {
-      return (
-        <div className="rounded-lg border border-border bg-secondary/30 p-2.5 text-xs">
-          <span className="font-medium">Paused for approval</span>
-        </div>
-      );
-    }
+    if (isPending) return <ResultLine tone="muted" summary="Paused for approval" />;
     if (isError) {
       return (
-        <div className="flex items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/5 p-2.5 text-xs text-destructive">
-          <TriangleAlert className="mt-0.5 size-3.5 shrink-0" />
-          <span className="min-w-0 break-words">{String(content.error)}</span>
-        </div>
+        <ResultLine tone="error" summary="Error" defaultOpen>
+          <span className="whitespace-pre-wrap break-words">{String(content.error)}</span>
+        </ResultLine>
       );
     }
 
@@ -74,33 +73,136 @@ export function StepView({ step }: { step: AgentStepOut }) {
       return <FileListResult entries={entries} />;
     }
     if (step.tool_name && READ_TOOLS.has(step.tool_name)) {
-      return <CodeResult content={typeof content.content === "string" ? content.content : ""} />;
+      const text = typeof content.content === "string" ? content.content : "";
+      return <CodeBlockResult content={text} summary={`Read ${countLines(text)} lines`} />;
     }
     if (step.tool_name && WRITE_TOOLS.has(step.tool_name)) {
-      return (
-        <div className="rounded-lg border border-border bg-secondary/30 p-2.5 text-xs text-muted-foreground">
-          Saved.
-        </div>
-      );
+      return <ResultLine tone="success" summary="Saved" />;
     }
     if (step.tool_name && RUN_TOOLS.has(step.tool_name)) {
       return <CommandResult content={content} />;
     }
 
     return (
-      <div className="rounded-lg border border-border bg-secondary/30 p-2.5 text-xs">
-        <span className="font-medium">Result</span>
-        <pre className="mt-1 overflow-x-auto text-muted-foreground">
+      <ResultLine tone="muted" summary="Result">
+        <pre className="overflow-x-auto whitespace-pre-wrap break-words">
           {JSON.stringify(content, null, 2)}
         </pre>
-      </div>
+      </ResultLine>
     );
   }
 
-  // final_response
+  // final_response — plain flowing prose, no bullet and no bordered card, same as Claude Code's
+  // own final answer text (only intermediate tool actions get the "⏺" treatment above).
   return (
-    <div className="rounded-lg border border-primary/30 bg-primary/5 p-3 text-sm">
+    <div className="py-1 text-sm">
       <MarkdownContent content={String(step.content.content ?? "")} />
+    </div>
+  );
+}
+
+/** Ticks once a second while `active`, returning seconds elapsed since `startedAt`. Reading the
+ * clock (Date.now()) has to happen inside an effect, not inline during render — calling it there
+ * is an impure read that can produce a different result on every render, which is exactly what a
+ * ticking display needs, but React's purity rule (rightly) rejects it outside an effect. */
+function useElapsedSeconds(startedAt: string, active: boolean): number {
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    if (!active) return;
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [active]);
+
+  return Math.max(0, Math.floor((now - new Date(startedAt).getTime()) / 1000));
+}
+
+/** The live "still working" line shown while a run's status is "running" — Claude Code's own
+ * spinner-with-status-line, right down to the "esc to interrupt" hint next to it. Steps arrive via
+ * polling (see lib/api/agents.ts#pollAgentRun), so this is what tells the user more is still
+ * coming rather than the transcript having silently stalled. */
+export function WorkingIndicator({
+  stepCount,
+  maxSteps,
+  startedAt,
+  onStop,
+}: {
+  stepCount: number;
+  maxSteps: number;
+  startedAt: string;
+  onStop?: () => void;
+}) {
+  const elapsedSeconds = useElapsedSeconds(startedAt, true);
+
+  return (
+    <div className="flex items-center gap-2 py-1 font-mono text-[13px] text-muted-foreground">
+      <span className="relative flex size-2.5 shrink-0">
+        <span className="absolute inline-flex size-full animate-ping rounded-full bg-primary/50" />
+        <span className="relative inline-flex size-2.5 rounded-full bg-primary" />
+      </span>
+      <span>
+        Working… ({elapsedSeconds}s · {stepCount}/{maxSteps} steps)
+      </span>
+      {onStop && (
+        <button
+          type="button"
+          onClick={onStop}
+          className="ml-1 rounded border border-border px-1.5 py-0.5 text-xs text-muted-foreground hover:border-destructive/50 hover:text-destructive"
+        >
+          esc to interrupt
+        </button>
+      )}
+    </div>
+  );
+}
+
+function countLines(text: string): number {
+  return text === "" ? 0 : text.split("\n").length;
+}
+
+/** The shared "⎿ result" line every observation renders as — plain indented monospace text, no
+ * border, no background, no icon set — matching a real terminal's continuation prefix instead of
+ * a chat "card". Auto-collapses long content behind a click-to-expand toggle. */
+function ResultLine({
+  tone,
+  summary,
+  children,
+  defaultOpen = false,
+  collapsible = false,
+}: {
+  tone: "muted" | "success" | "error";
+  summary: string;
+  children?: React.ReactNode;
+  defaultOpen?: boolean;
+  collapsible?: boolean;
+}) {
+  // "open" only governs visibility when there's actually a toggle to collapse behind (collapsible
+  // === true) — non-collapsible results have no affordance to reopen them, so they must always
+  // render their content regardless of this state.
+  const [open, setOpen] = useState(defaultOpen);
+  const expanded = !collapsible || open;
+  const summaryColor =
+    tone === "error" ? "text-destructive" : tone === "success" ? "text-emerald-600 dark:text-emerald-500" : "text-muted-foreground";
+
+  return (
+    <div className="pl-1 font-mono text-[13px] leading-relaxed">
+      <button
+        type="button"
+        onClick={() => collapsible && setOpen((v) => !v)}
+        className={cn(
+          "flex items-start gap-1 text-muted-foreground",
+          collapsible && "cursor-pointer hover:text-foreground",
+        )}
+      >
+        <span className="shrink-0">⎿</span>
+        {collapsible && (
+          <ChevronRight className={cn("mt-1 size-3 shrink-0 transition-transform", expanded && "rotate-90")} />
+        )}
+        <span className={summaryColor}>{summary}</span>
+      </button>
+      {expanded && children && (
+        <div className="ml-4 border-l border-border/60 pl-2 text-muted-foreground">{children}</div>
+      )}
     </div>
   );
 }
@@ -113,43 +215,32 @@ interface EntrySummary {
 }
 
 function FileListResult({ entries }: { entries: EntrySummary[] }) {
-  if (entries.length === 0) {
-    return (
-      <div className="rounded-lg border border-border bg-secondary/30 p-2.5 text-xs text-muted-foreground">
-        No files here.
-      </div>
-    );
-  }
+  if (entries.length === 0) return <ResultLine tone="muted" summary="No files here" />;
   const shown = entries.slice(0, MAX_LISTED_ENTRIES);
   const remaining = entries.length - shown.length;
   return (
-    <div className="rounded-lg border border-border bg-secondary/30 p-2.5 text-xs">
-      <div className="flex flex-col gap-1">
+    <ResultLine
+      tone="muted"
+      summary={`Listed ${entries.length} ${entries.length === 1 ? "path" : "paths"}`}
+      collapsible={entries.length > COLLAPSE_LINE_THRESHOLD}
+    >
+      <div className="flex flex-col">
         {shown.map((entry) => (
-          <div key={entry.path} className="flex items-center gap-1.5 text-muted-foreground">
-            {entry.is_dir ? (
-              <Folder className="size-3 shrink-0" />
-            ) : (
-              <FileIcon className="size-3 shrink-0" />
-            )}
-            <span className="truncate">{entry.name}</span>
-          </div>
+          <span key={entry.path} className="truncate">
+            {entry.is_dir ? `${entry.name}/` : entry.name}
+          </span>
         ))}
+        {remaining > 0 && <span className="text-muted-foreground/70">…and {remaining} more</span>}
       </div>
-      {remaining > 0 && (
-        <p className="mt-1 text-muted-foreground/70">and {remaining} more</p>
-      )}
-    </div>
+    </ResultLine>
   );
 }
 
-function CodeResult({ content }: { content: string }) {
+function CodeBlockResult({ content, summary }: { content: string; summary: string }) {
   return (
-    <div className="rounded-lg border border-border bg-secondary/30 p-2.5 text-xs">
-      <pre className="max-h-64 overflow-auto whitespace-pre-wrap font-mono text-muted-foreground">
-        {content}
-      </pre>
-    </div>
+    <ResultLine tone="muted" summary={summary} collapsible={countLines(content) > COLLAPSE_LINE_THRESHOLD}>
+      <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words">{content}</pre>
+    </ResultLine>
   );
 }
 
@@ -158,19 +249,19 @@ function CommandResult({ content }: { content: Record<string, unknown> }) {
   const stderr = typeof content.stderr === "string" ? content.stderr : "";
   const exitCode = content.exit_code;
   const timedOut = content.timed_out === true;
+  const ok = exitCode === 0 && !timedOut;
+  const combined = [stdout, stderr].filter(Boolean).join("\n");
+
   return (
-    <div className="flex flex-col gap-1.5 rounded-lg border border-border bg-secondary/30 p-2.5 text-xs">
-      <div className="flex items-center gap-2 text-muted-foreground">
-        <span>exit code {String(exitCode)}</span>
-        {timedOut && <span className="text-destructive">timed out</span>}
-      </div>
-      {stdout && (
-        <pre className="max-h-64 overflow-auto whitespace-pre-wrap font-mono text-foreground">{stdout}</pre>
-      )}
-      {stderr && (
-        <pre className="max-h-64 overflow-auto whitespace-pre-wrap font-mono text-destructive">{stderr}</pre>
-      )}
-      {!stdout && !stderr && <p className="text-muted-foreground/70">(no output)</p>}
-    </div>
+    <ResultLine
+      tone={timedOut ? "error" : ok ? "success" : "error"}
+      summary={timedOut ? "Timed out" : `Exit ${String(exitCode)}`}
+      collapsible={countLines(combined) > COLLAPSE_LINE_THRESHOLD}
+      defaultOpen
+    >
+      {stdout && <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words text-foreground">{stdout}</pre>}
+      {stderr && <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words text-destructive">{stderr}</pre>}
+      {!stdout && !stderr && <span className="text-muted-foreground/70">(no output)</span>}
+    </ResultLine>
   );
 }

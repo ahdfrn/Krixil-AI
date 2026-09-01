@@ -14,17 +14,15 @@ import {
   Wrench,
 } from "lucide-react";
 import Link from "next/link";
-import { useEffect } from "react";
-import { useParams, usePathname, useRouter, useSearchParams } from "next/navigation";
+import { useParams, usePathname, useRouter } from "next/navigation";
 
 import { ChatHistoryItem } from "@/components/layout/chat-history-item";
 import { UserMenu } from "@/components/layout/user-menu";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
-import { groupByDate, groupConversationsByDate } from "@/lib/utils/date-groups";
+import { groupConversationsByDate } from "@/lib/utils/date-groups";
 import { useChatStore } from "@/stores/chat-store";
-import { useCodeSessionsStore } from "@/stores/code-sessions-store";
 import { useUIStore } from "@/stores/ui-store";
 
 const WORKSPACE_ITEMS = [
@@ -44,25 +42,14 @@ export function SidebarContent({
 }) {
   const router = useRouter();
   const pathname = usePathname();
-  const searchParams = useSearchParams();
   const params = useParams<{ conversationId?: string }>();
 
   const conversations = useChatStore((s) => s.conversations);
   const isLoading = useChatStore((s) => s.isLoadingConversations);
   const setCommandMenuOpen = useUIStore((s) => s.setCommandMenuOpen);
 
-  const codeSessions = useCodeSessionsStore((s) => s.sessions);
-  const loadCodeSessions = useCodeSessionsStore((s) => s.loadSessions);
-
-  useEffect(() => {
-    void loadCodeSessions();
-  }, [loadCodeSessions]);
-
   const visible = conversations.filter((c) => !c.archived);
   const groups = groupConversationsByDate(visible);
-  const codeSessionGroups = groupByDate(codeSessions);
-  const activeRoot = searchParams.get("root");
-  const activeDir = searchParams.get("dir");
 
   function handleNewChat() {
     router.push("/chat");
@@ -142,59 +129,22 @@ export function SidebarContent({
         </div>
         <nav className="flex flex-col gap-0.5 pb-2">
           {WORKSPACE_ITEMS.map((item) => {
-            const active = pathname.startsWith(item.href) && !(item.href === "/code" && activeRoot);
+            const active = pathname.startsWith(item.href);
             return (
-              <div key={item.href} className="flex flex-col gap-0.5">
-                <Link
-                  href={item.href}
-                  onClick={onNavigate}
-                  className={cn(
-                    "flex items-center gap-2 rounded-md px-2.5 py-1.5 text-sm",
-                    active
-                      ? "bg-sidebar-accent text-sidebar-accent-foreground"
-                      : "text-sidebar-foreground/80 hover:bg-sidebar-accent/60",
-                  )}
-                >
-                  <item.icon className="size-4" />
-                  {item.label}
-                </Link>
-
-                {/* Code sessions nested directly under "Code" — derived history (see
-                    lib/utils/code-sessions.ts), not a separate top-level section, since each one
-                    is a jumping-off point for the Code page specifically, not its own domain. */}
-                {item.href === "/code" && codeSessions.length > 0 && (
-                  <div className="ml-4 flex flex-col gap-1 border-l border-sidebar-border pl-2">
-                    {codeSessionGroups.map((group) => (
-                      <div key={group.label} className="flex flex-col gap-0.5">
-                        <div className="px-1.5 pt-1 text-[10px] text-muted-foreground/60">
-                          {group.label}
-                        </div>
-                        {group.items.map((session) => {
-                          const sessionActive =
-                            pathname === "/code" &&
-                            activeRoot === session.root &&
-                            activeDir === session.dir;
-                          return (
-                            <Link
-                              key={`${session.root}:${session.dir}`}
-                              href={`/code?root=${session.root}&dir=${encodeURIComponent(session.dir)}`}
-                              onClick={onNavigate}
-                              className={cn(
-                                "truncate rounded-md px-2.5 py-1 text-xs",
-                                sessionActive
-                                  ? "bg-sidebar-accent text-sidebar-accent-foreground"
-                                  : "text-sidebar-foreground/70 hover:bg-sidebar-accent/60",
-                              )}
-                            >
-                              {session.label}
-                            </Link>
-                          );
-                        })}
-                      </div>
-                    ))}
-                  </div>
+              <Link
+                key={item.href}
+                href={item.href}
+                onClick={onNavigate}
+                className={cn(
+                  "flex items-center gap-2 rounded-md px-2.5 py-1.5 text-sm",
+                  active
+                    ? "bg-sidebar-accent text-sidebar-accent-foreground"
+                    : "text-sidebar-foreground/80 hover:bg-sidebar-accent/60",
                 )}
-              </div>
+              >
+                <item.icon className="size-4" />
+                {item.label}
+              </Link>
             );
           })}
         </nav>
@@ -204,19 +154,29 @@ export function SidebarContent({
         <Link
           href="/settings"
           onClick={onNavigate}
-          className="flex items-center gap-2 rounded-md px-2.5 py-1.5 text-sm text-sidebar-foreground/80 hover:bg-sidebar-accent/60"
+          className={cn(
+            "flex items-center gap-2 rounded-md px-2.5 py-1.5 text-sm",
+            pathname.startsWith("/settings")
+              ? "bg-sidebar-accent text-sidebar-accent-foreground"
+              : "text-sidebar-foreground/80 hover:bg-sidebar-accent/60",
+          )}
         >
           <Settings className="size-4" />
           Settings
         </Link>
-        <a
-          href="#"
-          onClick={(e) => e.preventDefault()}
-          className="flex items-center gap-2 rounded-md px-2.5 py-1.5 text-sm text-sidebar-foreground/80 hover:bg-sidebar-accent/60"
+        <Link
+          href="/help"
+          onClick={onNavigate}
+          className={cn(
+            "flex items-center gap-2 rounded-md px-2.5 py-1.5 text-sm",
+            pathname.startsWith("/help")
+              ? "bg-sidebar-accent text-sidebar-accent-foreground"
+              : "text-sidebar-foreground/80 hover:bg-sidebar-accent/60",
+          )}
         >
           <HelpCircle className="size-4" />
           Help
-        </a>
+        </Link>
         <div className="mt-1 border-t border-sidebar-border pt-1">
           <UserMenu />
         </div>
