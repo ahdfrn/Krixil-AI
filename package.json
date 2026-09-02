@@ -1,0 +1,16 @@
+{
+  "name": "kirxil",
+  "private": true,
+  "description": "Krixil AI — root workspace for the Node.js/TypeScript packages (cli, apps/web). The backend (services/ai-service) stays Python/FastAPI and is not part of this workspace — see docs/architecture/kirxil-cli-prd.md §46/§47.",
+  "workspaces": [
+    "cli",
+    "apps/web"
+  ],
+  "scripts": {
+    "test:cli": "npm run test -w cli",
+    "typecheck:cli": "npm run typecheck -w cli",
+    "build:cli": "npm run build -w cli",
+    "lint:web": "npm run lint -w apps/web",
+    "build:web": "npm run build -w apps/web"
+  }
+}

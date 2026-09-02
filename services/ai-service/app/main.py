@@ -10,11 +10,13 @@ from app.agents.router import router as agents_router
 from app.ai.models_router import router as models_router
 from app.ai.router import aclose_providers
 from app.auth.router import router as auth_router
+from app.brain.router import router as brain_router
 from app.chat.router import router as chat_router
 from app.core.config import get_settings
 from app.core.logging import configure_logging, get_logger
 from app.finetune.router import router as finetune_router
 from app.health.router import router as health_router
+from app.mcp.router import router as mcp_router
 from app.memory.router import router as memory_router
 from app.middleware.request_context import RequestContextMiddleware
 from app.observability.tracing import configure_tracing
@@ -51,6 +53,8 @@ app.add_middleware(
 
 app.include_router(health_router, prefix=settings.api_v1_prefix)
 app.include_router(auth_router, prefix=settings.api_v1_prefix)
+app.include_router(brain_router, prefix=settings.api_v1_prefix)
+app.include_router(mcp_router, prefix=settings.api_v1_prefix)
 app.include_router(chat_router, prefix=settings.api_v1_prefix)
 app.include_router(rag_router, prefix=settings.api_v1_prefix)
 app.include_router(tools_router, prefix=settings.api_v1_prefix)

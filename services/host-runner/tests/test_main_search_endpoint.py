@@ -45,3 +45,21 @@ def test_search_rejects_a_path_outside_host_root(client):
     resp = client.get("/search", params={"pattern": "x", "path": "../outside"})
     assert resp.status_code == 400
     assert "outside HOST_ROOT" in resp.json()["detail"]
+
+
+def test_index_files_returns_real_path_and_content(tmp_path, client):
+    (tmp_path / "a.py").write_text("def handler():\n    pass\n", encoding="utf-8")
+
+    resp = client.get("/index-files")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body) == 1
+    assert body[0]["path"] == "a.py"
+    assert body[0]["content"] == "def handler():\n    pass\n"
+
+
+def test_index_files_rejects_a_path_outside_host_root(client):
+    resp = client.get("/index-files", params={"path": "../outside"})
+    assert resp.status_code == 400
+    assert "outside HOST_ROOT" in resp.json()["detail"]

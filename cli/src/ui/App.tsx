@@ -4,8 +4,10 @@ import TextInput from "ink-text-input";
 import { ApiError, KrixilApi, type AgentRun, type ModelInfo } from "../api.js";
 import { autoCheckpoint, diffStatSinceCheckpoint, findLastCheckpoint, resetToBeforeCheckpoint } from "../checkpoint.js";
 import { buildGoal } from "../goal.js";
+import { loadProjectConfig } from "../projectConfig.js";
 import { countTestAttempts, describeApprovalPrompt } from "../render.js";
 import { buildVerbInstruction } from "../verbs.js";
+import { formatVerifyResultLines, runVerifyPipeline } from "../verify.js";
 import { Banner } from "./Banner.js";
 import { PlanPanel } from "./PlanPanel.js";
 import { StatusBar } from "./StatusBar.js";
@@ -195,6 +197,16 @@ export function App({
         );
         if (approved) void runGoal(rawGoal, "build");
       }
+      // Real, deterministic check instead of trusting the model's own "Review" phase narration —
+      // same .kirxil.yml `verify:` pipeline `kirxil build`/`kirxil verify` use (verify.ts).
+      if (verb === "build" && finalRun?.status === "completed") {
+        const verifySteps = loadProjectConfig()?.verify;
+        if (verifySteps && verifySteps.length > 0) {
+          setNotice("Running verification pipeline (.kirxil.yml's verify:)...");
+          const verifyResult = await runVerifyPipeline(verifySteps, process.cwd());
+          setNotice(formatVerifyResultLines(verifyResult).join("\n"));
+        }
+      }
     },
     [api, dir, model, maxSteps, pollRun, waitForConfirm],
   );
@@ -343,9 +355,9 @@ export function App({
           )}
         </Box>
       ) : (
-        <Box>
-          <Text color="cyan" bold>
-            kirxil {">"}{" "}
+        <Box borderStyle="round" borderColor="#8b7bff" paddingX={1}>
+          <Text color="#8b7bff" bold>
+            {">"}{" "}
           </Text>
           <TextInput value={input} onChange={setInput} onSubmit={(v) => void handleSubmit(v)} />
         </Box>

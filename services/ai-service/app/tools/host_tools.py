@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import get_settings
 from app.tenancy.context import TenantContext
 from app.tools.base import RiskLevel, Tool, register_tool
+from app.tools.risk_rules import find_block_reason
 
 _UNREACHABLE_MESSAGE = (
     "host-runner isn't reachable — is it running? See services/host-runner/README.md."
@@ -246,6 +247,10 @@ class HostRunCommandInput(BaseModel):
     timeout_seconds: int = Field(default=60, ge=1, le=600)
 
 
+def _host_run_command_risk_classifier(params: HostRunCommandInput) -> str | None:
+    return find_block_reason(params.command)
+
+
 async def _host_run_command_handler(
     session: AsyncSession, tenant_ctx: TenantContext, params: HostRunCommandInput
 ) -> dict:
@@ -287,6 +292,9 @@ register_tool(
         required_permission="host:execute",
         handler=_host_run_command_handler,
         timeout_seconds=320.0,
+        # A narrow, real BLOCK backstop on top of the HIGH-risk approval pause above — see
+        # app/tools/risk_rules.py's docstring for exactly what this does and doesn't catch.
+        risk_classifier=_host_run_command_risk_classifier,
     )
 )
 

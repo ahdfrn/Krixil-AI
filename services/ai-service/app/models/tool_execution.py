@@ -20,7 +20,9 @@ class ToolExecution(UUIDPKMixin, TimestampMixin, Base):
     )
     tool_name: Mapped[str] = mapped_column(String(100), nullable=False)
     risk_level: Mapped[str] = mapped_column(String(20), nullable=False)
-    # "pending_approval" | "running" | "completed" | "failed" | "rejected"
+    # "pending_approval" | "running" | "completed" | "failed" | "rejected" | "blocked"
+    # ("blocked" — a real, hard-coded BLOCK-tier match, app/tools/risk_rules.py — never offered
+    # for approval at all, unlike "rejected" which a human actively declined.)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="running")
     input: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     output: Mapped[dict | None] = mapped_column(JSON, nullable=True)

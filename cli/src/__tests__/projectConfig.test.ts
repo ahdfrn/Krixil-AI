@@ -39,6 +39,15 @@ describe("loadProjectConfig", () => {
     });
   });
 
+  it("reads a real verify: list", () => {
+    writeFileSync(
+      join(root, ".kirxil.yml"),
+      "verify:\n  - npm run typecheck\n  - npm test\n  - npm run build\n",
+    );
+    const config = loadProjectConfig(root);
+    expect(config?.verify).toEqual(["npm run typecheck", "npm test", "npm run build"]);
+  });
+
   it("finds .kirxil.yml by walking up from a nested subdirectory", () => {
     writeFileSync(join(root, ".kirxil.yml"), "model:\n  default: llama3.1:8b\n");
     const nested = join(root, "src", "components");

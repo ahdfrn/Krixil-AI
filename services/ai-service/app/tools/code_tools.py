@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import get_settings
 from app.tenancy.context import TenantContext
 from app.tools.base import RiskLevel, Tool, register_tool
+from app.tools.risk_rules import find_block_reason
 from app.workspace.fs import (
     WorkspacePathError,
     delete_file,
@@ -195,6 +196,10 @@ class CodeRunCommandInput(BaseModel):
     timeout_seconds: int = Field(default=30, ge=1, le=600)
 
 
+def _code_run_command_risk_classifier(params: CodeRunCommandInput) -> str | None:
+    return find_block_reason(params.command)
+
+
 async def _code_run_command_handler(
     session: AsyncSession, tenant_ctx: TenantContext, params: CodeRunCommandInput
 ) -> dict:
@@ -230,6 +235,10 @@ register_tool(
         # own asyncio.wait_for (app/tools/service.py) would cancel the call before the sandbox
         # ever gets to return its result.
         timeout_seconds=180.0,
+        # Same narrow BLOCK backstop as host.run_command — the sandbox already bounds the blast
+        # radius (network-disabled, workspace-confined), but there's no reason to even let a
+        # container-wiping command reach the sandbox in the first place.
+        risk_classifier=_code_run_command_risk_classifier,
     )
 )
 

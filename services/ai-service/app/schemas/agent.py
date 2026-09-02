@@ -39,6 +39,9 @@ class AgentRunOut(BaseModel):
     error_message: str | None
     pending_execution_id: uuid.UUID | None
     model_id: str | None
+    # Set only when this run is one real child of a Multi-Agent Swarm (app/agents/swarm.py) —
+    # None for every ordinary run.
+    swarm_run_id: uuid.UUID | None
     created_at: datetime
     completed_at: datetime | None
 

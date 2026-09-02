@@ -16,6 +16,10 @@ MAX_SEARCH_RESULTS = 200
 # MAX_READ_BYTES above but scoped to search instead of erroring the whole request out.
 MAX_SEARCH_FILE_BYTES = 2_000_000
 SEARCH_IGNORED_DIR_NAMES = {"node_modules", "__pycache__", "venv", "dist", "build", ".next"}
+# Project Brain indexing (services/ai-service/app/brain/) — a real, bounded cap on how many real
+# files one index run reads, so pointing it at a huge tree doesn't turn into an unbounded crawl.
+MAX_INDEX_FILES = 500
+MAX_INDEX_FILE_BYTES = 500_000
 
 
 class HostPathError(ValueError):
@@ -123,4 +127,35 @@ def search_files(pattern: str, relative_dir: str = ".") -> list[dict]:
                     )
                     if len(results) >= MAX_SEARCH_RESULTS:
                         return results
+    return results
+
+
+def walk_indexable_files(relative_dir: str = ".") -> list[dict]:
+    """Real recursive walk returning {path, content} for Project Brain indexing
+    (services/ai-service/app/brain/service.py) — same ignored-directories/binary-skip logic as
+    search_files above, just returning whole file content instead of regex matches. Capped at
+    MAX_INDEX_FILES so pointing this at a huge tree stays bounded; files are walked in sorted
+    order so which ones get cut off at the cap is at least deterministic, not directory-order
+    luck."""
+    root = host_root()
+    target = resolve_host_path(relative_dir)
+
+    results: list[dict] = []
+    for dirpath, dirnames, filenames in os.walk(target):
+        dirnames[:] = sorted(
+            d for d in dirnames if d not in SEARCH_IGNORED_DIR_NAMES and not d.startswith(".")
+        )
+        for filename in sorted(filenames):
+            file_path = Path(dirpath) / filename
+            try:
+                if file_path.stat().st_size > MAX_INDEX_FILE_BYTES:
+                    continue
+                text = file_path.read_text(encoding="utf-8", errors="strict")
+            except (OSError, UnicodeDecodeError):
+                continue
+            results.append(
+                {"path": str(file_path.relative_to(root)).replace("\\", "/"), "content": text}
+            )
+            if len(results) >= MAX_INDEX_FILES:
+                return results
     return results

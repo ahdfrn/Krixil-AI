@@ -3,6 +3,7 @@ import pytest
 import app.ai.router as router_module
 from app.ai.anthropic_provider import AnthropicModelProvider
 from app.ai.catalog import get_model_catalog
+from app.ai.cloud_provider import CloudModelProvider
 from app.ai.router import ModelRouter
 from app.core.config import Settings
 
@@ -43,3 +44,72 @@ async def test_anthropic_catalog_entry_names_the_configured_model():
     assert len(catalog) == 1
     assert catalog[0].id == "auto"
     assert "claude-opus-5" in catalog[0].description
+
+
+@pytest.mark.parametrize(
+    ("provider_name", "key_field", "env_name"),
+    [
+        ("openrouter", "openrouter_api_key", "OPENROUTER_API_KEY"),
+        ("groq", "groq_api_key", "GROQ_API_KEY"),
+        ("huggingface", "huggingface_api_key", "HUGGINGFACE_API_KEY"),
+    ],
+)
+def test_cloud_provider_requires_api_key(monkeypatch, provider_name, key_field, env_name):
+    router = ModelRouter()
+    monkeypatch.setattr(
+        "app.ai.router.get_settings",
+        lambda: Settings(model_provider=provider_name, **{key_field: ""}),
+    )
+    with pytest.raises(ValueError, match=env_name):
+        router.get_provider()
+
+
+@pytest.mark.parametrize(
+    ("provider_name", "key_field"),
+    [
+        ("openrouter", "openrouter_api_key"),
+        ("groq", "groq_api_key"),
+        ("huggingface", "huggingface_api_key"),
+    ],
+)
+async def test_cloud_provider_resolves_with_a_real_key(monkeypatch, provider_name, key_field):
+    # Same real housekeeping as test_anthropic_provider_resolves_with_a_real_key above — the
+    # module-level _instances cache is keyed by name only, so a leaked open client here would
+    # bleed into whatever test resolves this provider name next.
+    router = ModelRouter()
+    monkeypatch.setattr(
+        "app.ai.router.get_settings",
+        lambda: Settings(model_provider=provider_name, **{key_field: "test-key"}),
+    )
+    try:
+        provider = router.get_provider()
+        assert isinstance(provider, CloudModelProvider)
+        assert provider.name == provider_name
+    finally:
+        cached = router_module._instances.pop(provider_name, None)
+        if cached is not None:
+            await cached.aclose()  # type: ignore[attr-defined]
+
+
+async def test_openrouter_catalog_entry_names_the_configured_model():
+    settings = Settings(model_provider="openrouter", openrouter_model="anthropic/claude-sonnet-5")
+    catalog = await get_model_catalog(settings)
+    assert len(catalog) == 1
+    assert catalog[0].id == "auto"
+    assert "anthropic/claude-sonnet-5" in catalog[0].description
+
+
+async def test_groq_catalog_entry_names_the_configured_model():
+    settings = Settings(model_provider="groq", groq_model="llama-3.3-70b-versatile")
+    catalog = await get_model_catalog(settings)
+    assert len(catalog) == 1
+    assert "llama-3.3-70b-versatile" in catalog[0].description
+
+
+async def test_huggingface_catalog_entry_names_the_configured_model():
+    settings = Settings(
+        model_provider="huggingface", huggingface_model="meta-llama/Llama-3.1-8B-Instruct"
+    )
+    catalog = await get_model_catalog(settings)
+    assert len(catalog) == 1
+    assert "meta-llama/Llama-3.1-8B-Instruct" in catalog[0].description

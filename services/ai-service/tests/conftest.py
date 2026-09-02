@@ -80,6 +80,13 @@ async def override_dependencies(session_factory, monkeypatch):
     # _run_agent_in_background (app/agents/router.py) runs the whole agent loop off the request
     # entirely now, on its own session — same reason as the two patches above.
     monkeypatch.setattr("app.agents.router.AsyncSessionLocal", session_factory)
+    # run_swarm_in_background (app/agents/swarm.py) — same reason again: its own detached
+    # sessions (one for decomposition/child creation, one per concurrent child, one for
+    # synthesis) all need to land on the test engine, not the real Postgres AsyncSessionLocal
+    # defaults to.
+    monkeypatch.setattr("app.agents.swarm.AsyncSessionLocal", session_factory)
+    # run_brain_index_in_background (app/brain/service.py) — same reason again.
+    monkeypatch.setattr("app.brain.service.AsyncSessionLocal", session_factory)
 
     yield
 

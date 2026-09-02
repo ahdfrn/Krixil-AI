@@ -121,6 +121,37 @@ async def test_host_run_command_rejection_never_calls_host_runner(client, monkey
         assert run_route.call_count == 0
 
 
+async def test_host_run_command_blocks_rm_rf_root_without_ever_pausing_for_approval(
+    client, monkeypatch
+):
+    """The real BLOCK tier (app/tools/risk_rules.py) — distinct from "pending_approval": a
+    command matching a known-catastrophic pattern never even reaches the approve/reject flow,
+    let alone host-runner itself."""
+    _override_host_runner(monkeypatch)
+    registered = await register(client)
+    headers = auth_headers(registered["access_token"])
+
+    with respx.mock(assert_all_called=False) as mock:
+        run_route = mock.post("http://host-runner.test/run")
+        resp = await client.post(
+            "/api/v1/tools/host.run_command/execute",
+            json={"directory": ".", "command": "rm -rf /"},
+            headers=headers,
+        )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "blocked"
+    assert "recursive force-delete of the filesystem root" in body["error_message"]
+    assert run_route.call_count == 0
+
+    # Real terminal state — nothing left to approve or reject.
+    approve_resp = await client.post(
+        f"/api/v1/tools/executions/{body['id']}/approve", headers=headers
+    )
+    assert approve_resp.status_code == 409
+
+
 async def test_host_edit_file_replaces_the_unique_occurrence(client, monkeypatch):
     _override_host_runner(monkeypatch)
     registered = await register(client)

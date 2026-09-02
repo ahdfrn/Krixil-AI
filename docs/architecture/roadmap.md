@@ -455,3 +455,234 @@ real keypress in this sandboxed environment (no TTY available to a non-interacti
 process here) — its own execution path reuses the already-verified run pipeline, but the actual
 keypress-triggered path is unverified and worth a human check. See `coding-agent.md`'s "Visual
 overhaul: the CLI's 'AI operating system' look, real subset only" section and `cli/README.md`.
+
+## KIRXIL AI Stack v2 — a real, phased roadmap against the new PRD
+
+The user shared a much larger follow-up PRD (2026-09-02): a full orchestration platform on top of
+today's single-tenant, single-agent-loop backend — a KIRXIL Orchestrator, a multi-provider Model
+Router, a Hermes Agent Engine adapter (confirmed real — NousResearch/hermes-agent, MIT, Feb 2026
+— but its actual embeddable integration surface needs its own research spike before being
+scoped), a Multi-Agent Swarm, a Project Brain (AST/symbol/vector indexing — pgvector is already
+running in this deployment's own Postgres image, confirmed via exploration, making this
+genuinely feasible without new infra), a 4-layer Memory system, an MCP Hub (currently zero MCP
+code anywhere in the backend), a 4-tier Security layer with a real CRITICAL/BLOCK tier (today's
+Permission Engine has all 4 `RiskLevel` values but no auto-block — everything either runs or
+pauses for approval), a Self-Healing + Verification Engine (today's `kirxil build` "four phases"
+are pure prompt text with zero enforcement, no retry/MAX_RETRIES concept anywhere), a Deployment
+Engine (no real deploy target exists anywhere in this codebase — explicitly blocked until the
+user names one), and a full `packages/*` monorepo restructure (explicitly sequenced **last**,
+as its own dedicated migration pass, not bundled with feature work — a mechanical rename-and-move
+across a working, tested system before any new functionality exists is pure risk for zero
+functional value today). Full phase-by-phase sequencing and the "what's actually real today"
+exploration findings live in `docs/architecture/kirxil-cli-prd.md`'s "KIRXIL AI Stack v2" status
+note and the approved plan this was scoped from.
+
+**Phase 1 — Model Router: real multi-provider support (done, 2026-09-02).** Added real
+`openrouter` and `groq` providers — both confirmed (via their own docs) to be genuinely
+OpenAI-compatible for chat *and* embeddings, so both reuse the existing `CloudModelProvider`
+(`app/ai/cloud_provider.py`) with their own named config, the same way `ollama` already reuses it.
+Added `huggingface` too — its router (`router.huggingface.co`) is OpenAI-compatible for chat only
+(confirmed via HF's own docs, which explicitly say embeddings need a different endpoint shape), so
+`CloudModelProvider` gained a new optional `embeddings_provider` delegation parameter (mirroring
+`AnthropicModelProvider`'s existing pattern) rather than writing a bespoke fourth provider class —
+a real simplification found during implementation, not scope creep. `app/ai/router.py` registers
+all three with the same "requires an API key" guard the existing providers already have;
+`app/ai/catalog.py` gained matching real catalog-description branches. **No API keys were
+available for any of the three** — real code, tested against mocked HTTP responses only
+(`tests/test_ai_router.py`, `tests/test_cloud_provider.py`), same honest caveat already
+established for the existing `anthropic` provider. Backend 198/198 tests (up from 187),
+ruff/mypy clean; `api` container rebuilt and confirmed to start cleanly with the new settings
+present but unset (still defaulting to `MODEL_PROVIDER=ollama`, unaffected). See
+`kirxil-cli-prd.md`'s §30 status note for the full provider list and the delegation-parameter
+rationale.
+
+**Phase 2 — Security: real CRITICAL/BLOCK tier (done, 2026-09-02).** Added a real, hard-coded
+BLOCK outcome on top of the existing HIGH/MEDIUM approval flow — `app/tools/risk_rules.py`'s
+`find_block_reason()`, a narrow, documented pattern list (recursive force-delete of `/`,
+formatting/recursively deleting a whole Windows drive, writing/reformatting a raw disk device)
+checked against `host.run_command`/`code.run_command`'s real command text via a new optional
+`Tool.risk_classifier` hook (`app/tools/base.py`), wired into `request_tool_execution`
+(`app/tools/service.py`'s new `_block()` helper) before the existing approval-pause logic ever
+runs. A match becomes a genuinely new terminal `ToolExecution.status` — `"blocked"` — with its own
+`tool.blocked` audit log entry, distinct from `"rejected"` (a human declined) since nothing was
+ever offered for approval at all. No changes needed in `app/agents/runner.py`: its existing
+"anything but completed/pending_approval is an error" branch already turns a blocked execution
+into a real observation the model sees and reacts to. Deliberately narrow per the PRD's own
+example split — `rm -rf /` blocks outright, but `DROP DATABASE production` stays at the existing
+HIGH-risk approval pause rather than being escalated, since a legitimate migration really can
+need that. CLI (`cli/src/api.ts`'s zod schema, `render.ts`'s observation summary — now labels a
+blocked outcome "🚫 Blocked" instead of a generic "Error") and the web app (`ExecutionStatus`
+type, the Tools page's status label and badge) both updated to recognize the new status.
+Live-verified against the real running stack (a fresh throwaway account): `rm -rf /` and
+`format C:` both returned `status: "blocked"` with the real reason and host-runner was never
+called; an ordinary command still paused for approval unaffected. Backend 214/214 tests (up from
+198), ruff/mypy clean; CLI 87/87 (up from 86), tsc clean; web app tsc clean. See
+`kirxil-cli-prd.md`'s §17 status note.
+
+**Phase 3 — Self-Healing + Verification: formalize `kirxil build` (done, 2026-09-02).** Two real,
+independent mechanics, both replacing something that used to be pure prompt text with zero
+enforcement.
+
+*Self-Healing* — `app/agents/runner.py` now tracks real test-command attempts
+(`host.run_command`/`code.run_command` whose command matches a real test-runner pattern) across a
+whole run and stops it with an honest `final_response` once a real `AGENT_MAX_TEST_RETRIES`
+(default 3) is hit and the latest attempt still failed — never silently retrying forever on the
+generic step budget. The trickiest part: host.run_command is HIGH risk, so *every* real test
+attempt genuinely pauses for approval first, and the approved tool's real execution/observation
+happens in `app/tools/service.py`'s `_resolve_paused_agent_run`, not in the main loop — a first
+version of this only checked the immediate-execution branch and silently never fired for
+host.run_command at all (caught by the live-style integration test itself, not by inspection).
+Fixed with a second check on the `resume=True` path, computing the attempt count from persisted
+steps (correct across pause/resume boundaries) and checking whether the just-resolved step was a
+failed test attempt. Verified via a real approve → resume cycle driven through 3 real
+(mocked-host-runner) failing attempts, ending the run with the expected message and exactly 3
+`host.run_command` steps recorded (`tests/test_agents.py`), plus 12 pure unit tests for the
+detection helpers (`tests/test_runner_retry_detection.py`).
+
+*Verification* — a new `verify:` list in `.kirxil.yml` (an ordered list of real shell commands),
+run for real via a new `cli/src/verify.ts` (`execaCommand`, real subprocesses, stopping at the
+first real non-zero exit) — deliberately *not* routed through `host.run_command`/the agent, since
+these are commands the user themselves configured and already trusts, and gating each on a
+HIGH-risk approval pause would be pure friction with no real safety benefit. A new
+`kirxil verify` command runs it standalone; `kirxil build` automatically runs it afterward (both
+the one-shot `runOnce.ts` path and the interactive REPL's plan → build handoff in `ui/App.tsx`) —
+a real, deterministic check instead of trusting the model's own "Review" phase narration. Verified
+live in a scratch directory: a 3-command pipeline with a failing middle step stopped there and
+reported exit 1 with the real stderr, the remaining step never ran; an all-passing pipeline
+reported exit 0; no `verify:` configured prints guidance instead of doing nothing silently.
+Backend 227/227 tests (up from 214), ruff/mypy clean; CLI 94/94 (up from 87), tsc clean. See
+`kirxil-cli-prd.md`'s §22 status note.
+
+**Phase 4 — Multi-Agent Swarm: real parallel sub-agents (done, 2026-09-02).** A new `SwarmRun`
+(`app/models/swarm_run.py`, `alembic/versions/0013_swarm_runs.py`) coordinates real decomposition
+and real parallel execution — no Architect/Backend/Security "agent" implementations, just the
+same one general agent loop this whole codebase already has, run several times concurrently with
+different real goal text. `app/agents/swarm.py`: `decompose_goal()` makes one real model call
+asking for a JSON array of 2–8 independent sub-tasks (defensive parsing, same code-fence-stripping
+pattern `app/memory/long_term.py`'s extraction already uses) — fewer than 2 real sub-tasks is a
+real, honest failure (`SwarmRun.status = "failed"`, a clear error message), never a fabricated
+fallback or a silent single-member "swarm." Each real sub-task becomes an ordinary child
+`AgentRun` (`swarm_run_id` FK), run concurrently via `asyncio.gather` — each in its own detached
+`AsyncSession`, since SQLAlchemy's `AsyncSession` isn't safe for concurrent use from more than one
+coroutine at once (same detached-session, rebuild-from-primitives shape
+`run_agent_in_background` already established, reused here for N children instead of one).
+One more real model call (`synthesize_results()`) combines every child's actual `final_response`
+into a report, honestly naming any sub-task that failed. New endpoints under the existing
+`/agents` router: `POST /agents/swarm`, `GET /agents/swarm`, `GET /agents/swarm/{id}/status`
+(real per-child status nested in the response). New CLI command `kirxil swarm "<goal>"` polls and
+prints real per-child status changes live, then the real synthesis. **Live-verified against the
+real Ollama-backed stack** (not mocked): "make this application production ready" decomposed into
+4 genuine sub-tasks, all ran in parallel with real tool calls, synthesis correctly and honestly
+reported which sub-tasks actually failed; a second live run through the CLI itself decomposed
+into 3 sub-tasks with an equally honest report. Backend 236/236 tests (up from 227) — including a
+real approve-free integration test using a custom deterministic provider (MockProvider itself
+never produces parseable JSON, which is itself the correct honest-failure path, covered by its
+own test) — ruff/mypy clean. CLI 98/98 (up from 94), tsc clean. Not built: dependency-aware
+sequencing between sub-tasks (every one runs independently and concurrently; no real "wait for
+this other sub-task's result first" exists yet) — see `kirxil-cli-prd.md`'s §27 status note.
+
+**Phase 5 — Project Brain: real symbol/vector index on the pgvector already running (done,
+2026-09-02).** File Map, a real Symbol Index, and real Vector Index/Semantic Search — the pieces
+of PRD §13 that don't need fabrication to be genuinely useful, scoped to `host.*`'s real
+HOST_ROOT tree. New host-runner endpoint `GET /index-files` (`app/fs.py`'s `walk_indexable_files`,
+same recursive-walk/ignored-dirs/binary-skip logic `search_files` already established, capped at
+500 files) returns real `{path, content}` pairs. `app/brain/symbols.py`: real stdlib `ast`
+parsing for Python (real line numbers via `node.lineno`/`end_lineno`); a real but deliberately
+narrow regex heuristic for JS/TS/JSX/TSX (single-line declaration detection only — no fabricated
+end-of-block claim, since that needs a real parser this pass doesn't add). `app/brain/service.py`
+chunks real content by reusing `app/rag/chunker.py`'s `chunk_text` (the exact function document
+upload already uses) and embeds it via whichever `ModelProvider` is active, storing it in a new
+pgvector-backed `brain_chunks` table (HNSW index, `alembic/versions/0014_brain.py`) that a real
+`<=>` cosine-distance query searches (`app/rag/search.py`'s own established pattern). New
+endpoints `POST /brain/index`, `GET /brain/status`, `POST /brain/search`; a new agent-callable
+`brain.search` tool (LOW risk) so the model itself can search by meaning mid-run, not just via
+`host.search_files`' regex. New CLI commands `kirxil brain index`/`kirxil brain search "<query>"`.
+Each new successful index run replaces the tenant's previous chunks outright — a fresh full
+re-index, not incremental (no dependency tracking to know what changed).
+**Live-verified against the real running stack**: indexed a real 3-file project (a Python file
+with a function and a class, a JS file with a function and a class, a README) — found the real 6
+symbols (4 Python + 2 JS, hand-verified exact), embedded 3 chunks; a real semantic search for "how
+do we charge a customer's credit card" correctly ranked the file containing
+`PaymentProcessor.charge()` first despite zero exact keyword overlap with the query, both via the
+CLI and by calling the `brain.search` tool directly. Backend 249/249 tests (up from 236),
+ruff/mypy clean — search itself has zero *offline* coverage by design, same real limitation
+`app/rag/search.py`'s own vector/hybrid search already has (empirically confirmed pgvector's
+`<=>` operator doesn't even compile against the SQLite test engine, not just "returns no rows").
+Host-runner 22/22 (up from 13). CLI 102/102 (up from 98), tsc clean. Not built: Dependency Graph,
+API Map, Database Map, real Git History (separate, much bigger subsystems, not attempted rather
+than faked) — see `kirxil-cli-prd.md`'s §13 status note.
+
+**Phase 6 — MCP Hub: real MCP client (done, 2026-09-02).** A real MCP (Model Context Protocol)
+client (`app/mcp/client.py`) built on the official `mcp` Python SDK — deliberately pinned to
+`1.9.4`, not latest, since the newest release forces an unrelated `pydantic` upgrade
+(`2.10.2` → `2.13.5`) as a side effect; `1.9.4` is the newest version that resolves cleanly
+against the existing pin. Stdio transport only this pass (real local subprocess servers; no
+remote HTTP/SSE yet). New tenant-scoped `MCPServer` model (name/command/args/env, unique per
+tenant+name) and `POST/GET/DELETE /mcp/servers` + `GET /mcp/servers/{id}/tools` endpoints
+(`app/mcp/service.py`, `app/mcp/router.py`) — `env` values come back redacted (`***`) in every
+response, never round-tripped in the clear. Three new agent tools (`app/tools/mcp_tools.py`):
+`mcp.list_servers` (LOW), `mcp.list_tools` (LOW, connects live), `mcp.call_tool` (HIGH,
+approval-gated exactly like `host.run_command`). New CLI commands `kirxil mcp add/list/remove/
+tools`. New migration `alembic/versions/0015_mcp_servers.py`.
+**Real bug found and fixed along the way**: `app/ai/mock_provider.py`'s naive tool-name word
+matcher collided with the agent loop's own fixed boilerplate text (`"Tool result: {...}"`, sent
+back as the next round's "user message" after every tool call) — since `mcp.call_tool` contains
+the word "tool", every multi-step goal in the offline test suite started spuriously re-matching
+it forever, exceeding `max_tool_calls` instead of completing. Fixed at the root with a
+`_FRAMEWORK_BOILERPLATE_WORDS = {"tool", "result"}` exclusion in the matcher, rather than renaming
+the tool (kept `mcp.call_tool` since it mirrors MCP's own `tools/call` spec vocabulary — the bug
+was really "any future tool name containing 'tool' or 'result' would collide," not specific to
+this one name).
+**Live-verified against the real running stack**: built a real minimal Python MCP server
+(`tests/fixtures/mcp_test_server.py`, official `FastMCP`, exposing `add(a,b)` and an
+always-failing `fail()` tool), copied it into the running `api` container (excluded from the
+image by `.dockerignore`'s `tests/` rule), registered it as a real MCP server via a throwaway
+tenant, listed its tools live (`GET /mcp/servers/{id}/tools` returned real `add`/`fail` schemas),
+then called `mcp.call_tool` end-to-end: a real HIGH-risk approval pause, and after approving,
+a real result from the actual subprocess (`10 + 32 = 42`). Cleaned up afterward: throwaway server
+config deleted, copied test file removed from the container, scratchpad session material deleted.
+Backend 262/262 tests (up from 249), ruff/mypy clean. CLI 106/106 (up from 102), tsc clean.
+**Not built, honestly**: remote MCP transports (HTTP/SSE) — stdio only; and the live `api`
+container has no Node.js/npx installed, so the most common real-world MCP servers (npx-based,
+e.g. `@modelcontextprotocol/server-filesystem`) can't actually be configured against this
+deployment yet — only Python-based (or otherwise container-available) server commands work today.
+Adding Node.js to the Dockerfile is a real, scoped follow-up, not attempted this pass. See
+`kirxil-cli-prd.md`'s §16 status note.
+
+**Phase 7 — Deployment Engine: still blocked.** No real deploy target (staging/production
+environment, cloud account, anything) exists anywhere in this codebase. This phase does not start
+until the user names a real one.
+
+**Phase 8 — Repo restructure, adapted scope (done, 2026-09-02).** The PRD's literal `packages/*`
+layout (§47) is per-concern **TypeScript** packages, designed for the PRD's own suggested
+Node.js/Fastify backend (§46) — Krixil's real backend stayed Python/FastAPI instead (already a
+documented deviation), so porting a fully built, 262-test backend into TypeScript packages for a
+layout preference was rejected as a real project on its own, not attempted here. The user was
+asked directly which real, adapted scope to pursue and chose the best-fit option: turn the two
+Node.js projects that genuinely exist — `cli/` and `apps/web/` — into a real root npm workspace
+(root `package.json`, one shared `package-lock.json`), instead of leaving them as two fully
+separate npm installs.
+**Real bug found and fixed by this pass's regression sweep, not shipped**: npm's default hoisting
+moved `ink` (only `cli` depends on it) to the workspace root, where its bundled
+`react-reconciler` resolved `apps/web`'s React 19 instead of the React 18 `cli` actually needs.
+`ink`'s own `peerDependencies` range for React (`>=18.0.0`) is technically satisfied by 19, so
+npm's own conflict detection never flagged it — the break only surfaced as a real runtime crash
+(`Cannot read properties of undefined (reading 'ReactCurrentOwner')`) when re-running `cli`'s
+Ink-render tests after the workspace conversion. Root-caused to dependency *placement*, not an
+allowed version range, and fixed with `install-strategy=nested` in a new root `.npmrc` — keeps
+each workspace's own dependency tree close to where it's used instead of npm's default blind
+hoisting, at the cost of a larger `node_modules` (not committed; gitignored either way).
+Also fixed along the way: CI (`.github/workflows/ci.yml`) never ran the CLI's own test/typecheck
+suite at all — a real, pre-existing gap unrelated to this phase's own work, caught while updating
+the frontend jobs' install step to run from the new workspace root. Added `test-cli` and
+`security-cli` jobs; `lint-frontend`/`build-frontend`/`security-frontend` now `npm ci` from root
+then run scoped via `npm run <script> -w apps/web` instead of a `working-directory: apps/web`
+install.
+**Verified**: CLI 106/106 tests (same suite as Phase 6, confirmed still passing after the fix),
+tsc clean, `npm audit` 0 vulnerabilities. `apps/web` build/lint/`npm audit` all still pass
+unchanged. Backend (`services/ai-service`) untouched — not part of this workspace, its own 262
+tests unaffected. See `kirxil-cli-prd.md`'s §47 status note.
+**Not done**: `services/ai-service`'s language/module layout, `services/host-runner`,
+`services/sandbox-runner`, `training/` — none are Node.js projects a workspace applies to; the
+PRD's literal `packages/*` TypeScript-package split remains a documented, deliberate deviation,
+not attempted.

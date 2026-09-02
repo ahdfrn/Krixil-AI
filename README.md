@@ -25,6 +25,12 @@ Everything in the "Docker Compose" row comes up together with one command. Every
 give it: `apps/web` needs a fast dev-reload loop, Ollama/`training/` need real GPU access, and
 `host-runner` needs to touch real files on your machine, not a sandboxed volume.
 
+`cli/` and `apps/web/` are a real root npm workspace (root [`package.json`](package.json)) — one
+`npm install` at the repo root installs both, or run it inside either directory as shown below,
+which works the same way. `services/ai-service` (the backend) stays a separate Python project,
+deliberately not folded into this workspace — see `docs/architecture/kirxil-cli-prd.md`'s §46/§47
+status notes for why.
+
 ## Prerequisites
 
 - **Python 3.11+** — https://www.python.org/downloads/

@@ -162,7 +162,14 @@ export function describeObservation(step: AgentStep, toolCallArgs?: Record<strin
   const toolName = step.tool_name;
 
   if (content.status === "pending_approval") return { summary: "Paused for approval", body: [], tone: "muted" };
-  if ("error" in content) return { summary: "Error", body: [String(content.error)], tone: "error" };
+  if ("error" in content) {
+    const message = String(content.error);
+    // A real BLOCK-tier outcome (app/tools/risk_rules.py) — never offered for approval at all,
+    // worth a distinct summary from an ordinary tool failure. error_message's own real prefix
+    // ("Blocked: ...") is what this checks, not a guess.
+    const summary = message.startsWith("Blocked:") ? "🚫 Blocked" : "Error";
+    return { summary, body: [message], tone: "error" };
+  }
 
   if (toolName && FILE_TOOLS.has(toolName)) {
     const entries = (Array.isArray(content.entries) ? content.entries : []) as { name: string; is_dir: boolean }[];
@@ -224,4 +231,25 @@ export function describeObservation(step: AgentStep, toolCallArgs?: Record<strin
   }
 
   return { summary: "Result", body: [JSON.stringify(content)], tone: "muted" };
+}
+
+/** A real icon for a swarm child's actual current status (kirxil swarm — see api.ts's
+ * SwarmRunDetail/AgentRunOut). No fabricated per-child "personality" state, just what the real
+ * status string already is. */
+export function swarmChildStatusIcon(status: string): string {
+  switch (status) {
+    case "completed":
+      return "✓";
+    case "failed":
+      return "✗";
+    case "waiting_approval":
+      return "⏸";
+    case "cancelled":
+    case "stopped":
+      return "○";
+    case "running":
+      return "◉";
+    default:
+      return "○";
+  }
 }

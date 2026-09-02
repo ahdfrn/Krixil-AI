@@ -36,6 +36,9 @@ const AgentRunSchema = z.object({
   final_response: z.string().nullable(),
   error_message: z.string().nullable(),
   pending_execution_id: z.string().nullable(),
+  // Set only when this run is one real child of a Multi-Agent Swarm (POST /agents/swarm) — null
+  // for every ordinary run.
+  swarm_run_id: z.string().nullable(),
   created_at: z.string(),
   completed_at: z.string().nullable(),
 });
@@ -50,11 +53,66 @@ export type ModelInfo = z.infer<typeof ModelSchema>;
 const MemorySchema = z.object({ id: z.string(), content: z.string(), created_at: z.string() });
 export type MemoryOut = z.infer<typeof MemorySchema>;
 
+const SwarmRunSchema = z.object({
+  id: z.string(),
+  goal: z.string(),
+  status: z.string(),
+  model_id: z.string().nullable(),
+  subtask_count: z.number(),
+  synthesis: z.string().nullable(),
+  error_message: z.string().nullable(),
+  created_at: z.string(),
+  completed_at: z.string().nullable(),
+});
+export type SwarmRunOut = z.infer<typeof SwarmRunSchema>;
+
+const SwarmRunDetailSchema = SwarmRunSchema.extend({ children: z.array(AgentRunSchema) });
+export type SwarmRunDetail = z.infer<typeof SwarmRunDetailSchema>;
+
+const BrainIndexRunSchema = z.object({
+  id: z.string(),
+  directory: z.string(),
+  status: z.string(),
+  file_count: z.number(),
+  symbol_count: z.number(),
+  chunk_count: z.number(),
+  error_message: z.string().nullable(),
+  created_at: z.string(),
+  completed_at: z.string().nullable(),
+});
+export type BrainIndexRunOut = z.infer<typeof BrainIndexRunSchema>;
+
+const BrainSearchResultSchema = z.object({
+  path: z.string(),
+  language: z.string().nullable(),
+  content: z.string(),
+});
+export type BrainSearchResultOut = z.infer<typeof BrainSearchResultSchema>;
+
+const MCPServerSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  command: z.string(),
+  args: z.array(z.string()),
+  // Real values are redacted to "***" by the backend (app/mcp/router.py) — never sent back over
+  // the API once set.
+  env: z.record(z.string(), z.string()),
+  created_at: z.string(),
+});
+export type MCPServerOut = z.infer<typeof MCPServerSchema>;
+
+const MCPToolSchema = z.object({
+  name: z.string(),
+  description: z.string(),
+  input_schema: z.record(z.string(), z.unknown()),
+});
+export type MCPToolOut = z.infer<typeof MCPToolSchema>;
+
 const ToolExecutionSchema = z.object({
   id: z.string(),
   tool_name: z.string(),
   risk_level: z.enum(["low", "medium", "high", "critical"]),
-  status: z.enum(["pending_approval", "running", "completed", "failed", "rejected"]),
+  status: z.enum(["pending_approval", "running", "completed", "failed", "rejected", "blocked"]),
   input: z.record(z.string(), z.unknown()),
   output: z.record(z.string(), z.unknown()).nullable(),
   error_message: z.string().nullable(),
@@ -128,10 +186,96 @@ export class KrixilApi {
     return AgentRunSchema.parse(await response.json());
   }
 
+  async runSwarm(goal: string, model?: string, maxSubtasks?: number): Promise<SwarmRunOut> {
+    const response = await fetch(`${this.baseUrl}/agents/swarm`, {
+      method: "POST",
+      headers: this.headers(),
+      body: JSON.stringify({
+        goal,
+        model: model ?? null,
+        max_subtasks: maxSubtasks ?? undefined,
+      }),
+    });
+    if (!response.ok) await parseError(response);
+    return SwarmRunSchema.parse(await response.json());
+  }
+
+  async getSwarmStatus(swarmRunId: string): Promise<SwarmRunDetail> {
+    const response = await fetch(`${this.baseUrl}/agents/swarm/${swarmRunId}/status`, {
+      headers: this.headers(),
+    });
+    if (!response.ok) await parseError(response);
+    return SwarmRunDetailSchema.parse(await response.json());
+  }
+
   async getStatus(runId: string): Promise<AgentRun> {
     const response = await fetch(`${this.baseUrl}/agents/${runId}/status`, { headers: this.headers() });
     if (!response.ok) await parseError(response);
     return AgentRunDetailSchema.parse(await response.json());
+  }
+
+  async indexBrain(directory = "."): Promise<BrainIndexRunOut> {
+    const response = await fetch(`${this.baseUrl}/brain/index`, {
+      method: "POST",
+      headers: this.headers(),
+      body: JSON.stringify({ directory }),
+    });
+    if (!response.ok) await parseError(response);
+    return BrainIndexRunSchema.parse(await response.json());
+  }
+
+  async getBrainStatus(): Promise<BrainIndexRunOut | null> {
+    const response = await fetch(`${this.baseUrl}/brain/status`, { headers: this.headers() });
+    if (!response.ok) await parseError(response);
+    const body = await response.json();
+    return body === null ? null : BrainIndexRunSchema.parse(body);
+  }
+
+  async searchBrain(query: string, limit?: number): Promise<BrainSearchResultOut[]> {
+    const response = await fetch(`${this.baseUrl}/brain/search`, {
+      method: "POST",
+      headers: this.headers(),
+      body: JSON.stringify({ query, limit: limit ?? undefined }),
+    });
+    if (!response.ok) await parseError(response);
+    return z.array(BrainSearchResultSchema).parse(await response.json());
+  }
+
+  async addMcpServer(
+    name: string,
+    command: string,
+    args: string[],
+    env: Record<string, string>,
+  ): Promise<MCPServerOut> {
+    const response = await fetch(`${this.baseUrl}/mcp/servers`, {
+      method: "POST",
+      headers: this.headers(),
+      body: JSON.stringify({ name, command, args, env }),
+    });
+    if (!response.ok) await parseError(response);
+    return MCPServerSchema.parse(await response.json());
+  }
+
+  async listMcpServers(): Promise<MCPServerOut[]> {
+    const response = await fetch(`${this.baseUrl}/mcp/servers`, { headers: this.headers() });
+    if (!response.ok) await parseError(response);
+    return z.array(MCPServerSchema).parse(await response.json());
+  }
+
+  async removeMcpServer(serverId: string): Promise<void> {
+    const response = await fetch(`${this.baseUrl}/mcp/servers/${serverId}`, {
+      method: "DELETE",
+      headers: this.headers(),
+    });
+    if (!response.ok) await parseError(response);
+  }
+
+  async getMcpServerTools(serverId: string): Promise<MCPToolOut[]> {
+    const response = await fetch(`${this.baseUrl}/mcp/servers/${serverId}/tools`, {
+      headers: this.headers(),
+    });
+    if (!response.ok) await parseError(response);
+    return z.array(MCPToolSchema).parse(await response.json());
   }
 
   async cancel(runId: string): Promise<AgentRunOut> {

@@ -5,7 +5,7 @@ is real filesystem I/O."""
 
 import pytest
 
-from app.fs import HostPathError, search_files
+from app.fs import HostPathError, search_files, walk_indexable_files
 
 
 @pytest.fixture
@@ -96,3 +96,76 @@ def test_caps_results_at_the_documented_limit(host_root, monkeypatch):
     results = search_files("MATCH")
 
     assert len(results) == 3
+
+
+def test_walk_indexable_files_returns_real_path_and_content(host_root):
+    (host_root / "app.py").write_text("def divide(a, b):\n    return a / b\n", encoding="utf-8")
+
+    results = walk_indexable_files()
+
+    assert len(results) == 1
+    assert results[0]["path"] == "app.py"
+    assert results[0]["content"] == "def divide(a, b):\n    return a / b\n"
+
+
+def test_walk_indexable_files_recurses_and_sorts(host_root):
+    (host_root / "b.py").write_text("second\n", encoding="utf-8")
+    nested = host_root / "src"
+    nested.mkdir()
+    (nested / "a.py").write_text("nested\n", encoding="utf-8")
+
+    results = walk_indexable_files()
+
+    assert [r["path"] for r in results] == ["b.py", "src/a.py"]
+
+
+def test_walk_indexable_files_skips_ignored_dirs_and_binaries(host_root):
+    ignored = host_root / "node_modules"
+    ignored.mkdir()
+    (ignored / "pkg.js").write_text("ignored\n", encoding="utf-8")
+    (host_root / "photo.png").write_bytes(b"\x89PNG\r\n\x1a\n\x00\x01\x02\xff\xfe")
+    (host_root / "real.py").write_text("kept\n", encoding="utf-8")
+
+    results = walk_indexable_files()
+
+    assert [r["path"] for r in results] == ["real.py"]
+
+
+def test_walk_indexable_files_skips_oversized_files(host_root, monkeypatch):
+    import app.fs as fs_module
+
+    monkeypatch.setattr(fs_module, "MAX_INDEX_FILE_BYTES", 10)
+    (host_root / "big.py").write_text("x" * 100, encoding="utf-8")
+    (host_root / "small.py").write_text("ok\n", encoding="utf-8")
+
+    results = walk_indexable_files()
+
+    assert [r["path"] for r in results] == ["small.py"]
+
+
+def test_walk_indexable_files_caps_at_the_documented_limit(host_root, monkeypatch):
+    import app.fs as fs_module
+
+    monkeypatch.setattr(fs_module, "MAX_INDEX_FILES", 2)
+    for i in range(5):
+        (host_root / f"f{i}.py").write_text("x\n", encoding="utf-8")
+
+    results = walk_indexable_files()
+
+    assert len(results) == 2
+
+
+def test_walk_indexable_files_scopes_to_the_given_subdirectory(host_root):
+    (host_root / "a.py").write_text("root\n", encoding="utf-8")
+    sub = host_root / "sub"
+    sub.mkdir()
+    (sub / "b.py").write_text("nested\n", encoding="utf-8")
+
+    results = walk_indexable_files(relative_dir="sub")
+
+    assert [r["path"] for r in results] == ["sub/b.py"]
+
+
+def test_walk_indexable_files_path_outside_host_root_is_rejected(host_root):
+    with pytest.raises(HostPathError):
+        walk_indexable_files(relative_dir="../outside")

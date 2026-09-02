@@ -36,4 +36,10 @@ class AgentRun(UUIDPKMixin, TimestampMixin, Base):
     pending_execution_id: Mapped[uuid.UUID | None] = mapped_column(
         GUID(), ForeignKey("tool_executions.id", ondelete="SET NULL"), nullable=True
     )
+    # Set only for a run created as one real child of a Multi-Agent Swarm (app/agents/swarm.py) —
+    # None for every other run. Lets `kirxil swarm`'s status poll show real per-child progress
+    # without a separate join table.
+    swarm_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        GUID(), ForeignKey("swarm_runs.id", ondelete="SET NULL"), nullable=True
+    )
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

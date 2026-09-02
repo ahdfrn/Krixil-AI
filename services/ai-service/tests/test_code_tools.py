@@ -115,6 +115,37 @@ async def test_run_command_executes_immediately_and_calls_sandbox_runner(
     assert body["output"] == {"stdout": "hi\n", "stderr": "", "exit_code": 0, "timed_out": False}
 
 
+async def test_run_command_blocks_rm_rf_root_without_ever_calling_sandbox_runner(
+    client, monkeypatch, tmp_path
+):
+    """Same real BLOCK tier as host.run_command (app/tools/risk_rules.py) — even though the
+    sandbox itself is network-disabled and workspace-confined, there's no reason to let a
+    container-wiping command reach it in the first place."""
+    await _override_workspace_root(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        "app.tools.code_tools.get_settings",
+        lambda: Settings(
+            workspace_root=str(tmp_path), sandbox_runner_url="http://sandbox-runner.test"
+        ),
+    )
+    registered = await register(client)
+    headers = auth_headers(registered["access_token"])
+
+    with respx.mock(assert_all_called=False) as mock:
+        run_route = mock.post("http://sandbox-runner.test/run")
+        execute_resp = await client.post(
+            "/api/v1/tools/code.run_command/execute",
+            json={"command": "rm -rf /"},
+            headers=headers,
+        )
+
+    assert execute_resp.status_code == 200
+    body = execute_resp.json()
+    assert body["status"] == "blocked"
+    assert "recursive force-delete of the filesystem root" in body["error_message"]
+    assert run_route.call_count == 0
+
+
 async def test_run_command_reports_sandbox_runner_failure(client, monkeypatch, tmp_path):
     await _override_workspace_root(monkeypatch, tmp_path)
     monkeypatch.setattr(

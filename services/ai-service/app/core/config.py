@@ -64,6 +64,34 @@ class Settings(BaseSettings):
     ollama_default_model: str = "qwen2.5:7b"
     ollama_embedding_model: str = "nomic-embed-text"
 
+    # OpenRouter's own /v1 endpoint is genuinely OpenAI-compatible for both chat completions and
+    # embeddings (confirmed against their own docs, not assumed) — same CloudModelProvider class,
+    # its own named provider/settings so it can be configured independently of OPENAI_* above
+    # rather than overloading that block.
+    openrouter_api_key: str = ""
+    openrouter_base_url: str = "https://openrouter.ai/api/v1"
+    openrouter_model: str = "openai/gpt-4o-mini"
+    openrouter_embedding_model: str = "openai/text-embedding-3-small"
+
+    # Groq's API is also OpenAI-compatible for both chat and embeddings (their own
+    # console.groq.com/docs/api-reference documents both under the same shape) — same
+    # CloudModelProvider class again. Defaults here are real, current model ids as of this
+    # writing, not guarantees — Groq's hosted-model lineup changes; override via env if a default
+    # goes stale.
+    groq_api_key: str = ""
+    groq_base_url: str = "https://api.groq.com/openai/v1"
+    groq_model: str = "llama-3.3-70b-versatile"
+    groq_embedding_model: str = "nomic-embed-text-v1_5"
+
+    # Hugging Face's router (router.huggingface.co/v1) is OpenAI-compatible for chat completions
+    # only — confirmed against HF's own docs, which explicitly say embeddings need a different,
+    # non-OpenAI-shaped endpoint. So this reuses CloudModelProvider for chat/tool_call (real
+    # compatibility), but — same reasoning as ANTHROPIC_* above — always uses Ollama's embeddings
+    # instead of trying (and failing) to call HF's router for them.
+    huggingface_api_key: str = ""
+    huggingface_base_url: str = "https://router.huggingface.co/v1"
+    huggingface_model: str = "meta-llama/Llama-3.1-8B-Instruct"
+
     short_term_memory_max_messages: int = 20
     short_term_memory_ttl_seconds: int = 60 * 60 * 24  # 24h — this is short-term cache, not history
 
@@ -90,6 +118,14 @@ class Settings(BaseSettings):
     # just written. 5 was sized around the weaker model's behavior, not this one's.
     agent_max_tool_calls: int = 8
     agent_max_execution_seconds: int = 120
+    # PRD §12's Self-Healing Engine: "MAX_RETRIES = 3, dan bukan infinite loop" — a real, bounded
+    # limit on how many times a single run may re-attempt a failing test invocation
+    # (host.run_command/code.run_command whose command looks like a test runner — see
+    # app/agents/runner.py's _is_test_command_call) before the run stops itself and reports the
+    # real outcome honestly, instead of quietly retrying until the generic step budget above runs
+    # out. Counts real test-command attempts across the whole run (including across a
+    # pending_approval pause/resume), not consecutive failures only.
+    agent_max_test_retries: int = 3
 
     # How many tool calls a single /chat or /chat/stream turn may make before it's forced to give
     # a final answer — smaller than agent_max_tool_calls on purpose, chat should stay
@@ -134,6 +170,11 @@ class Settings(BaseSettings):
     # pattern already used to reach the natively-installed Ollama.
     host_runner_url: str = "http://host.docker.internal:8002"
     host_runner_timeout_seconds: int = 60
+
+    # MCP Hub (KIRXIL AI Stack v2 Phase 6, app/mcp/). A real, bounded timeout on connecting to and
+    # calling a tenant-configured MCP server (stdio subprocess) — an unresponsive third-party
+    # server shouldn't be able to hang an agent run indefinitely.
+    mcp_timeout_seconds: int = 30
 
     @property
     def sqlalchemy_database_url(self) -> str:

@@ -12,7 +12,7 @@ export function PlanPanel({ planText }: { planText: string }) {
   return (
     <Box flexDirection="column">
       {lines.map((line, i) => (
-        <Text key={i} color={i === 0 || i === lines.length - 1 ? "cyan" : undefined}>
+        <Text key={i} color={i === 0 || i === lines.length - 1 ? "#8b7bff" : undefined} bold={i === 0 || i === lines.length - 1}>
           {line}
         </Text>
       ))}

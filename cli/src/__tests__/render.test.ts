@@ -8,6 +8,7 @@ import {
   findInFlightToolCall,
   planPanelLines,
   summarizeToolCall,
+  swarmChildStatusIcon,
 } from "../render.js";
 import type { AgentStep } from "../api.js";
 
@@ -55,6 +56,18 @@ describe("describeObservation", () => {
     const result = describeObservation(step({ tool_name: "host.read_file", content: { error: "not found" } }));
     expect(result.tone).toBe("error");
     expect(result.body).toEqual(["not found"]);
+    expect(result.summary).toBe("Error");
+  });
+
+  it("labels a real BLOCK-tier outcome distinctly from an ordinary error", () => {
+    const result = describeObservation(
+      step({
+        tool_name: "host.run_command",
+        content: { error: "Blocked: recursive force-delete of the filesystem root — this command was not executed." },
+      }),
+    );
+    expect(result.summary).toBe("🚫 Blocked");
+    expect(result.tone).toBe("error");
   });
 
   it("reports a successful command's exit code and output", () => {
@@ -260,5 +273,20 @@ describe("planPanelLines", () => {
     const lines = planPanelLines("a\nb\nc");
     const bodyStart = lines.indexOf("a");
     expect(lines.slice(bodyStart, bodyStart + 3)).toEqual(["a", "b", "c"]);
+  });
+});
+
+describe("swarmChildStatusIcon", () => {
+  it("maps every real status string to its own icon", () => {
+    expect(swarmChildStatusIcon("running")).toBe("◉");
+    expect(swarmChildStatusIcon("completed")).toBe("✓");
+    expect(swarmChildStatusIcon("failed")).toBe("✗");
+    expect(swarmChildStatusIcon("waiting_approval")).toBe("⏸");
+    expect(swarmChildStatusIcon("cancelled")).toBe("○");
+    expect(swarmChildStatusIcon("stopped")).toBe("○");
+  });
+
+  it("falls back to a neutral icon for an unrecognized status", () => {
+    expect(swarmChildStatusIcon("something-new")).toBe("○");
   });
 });

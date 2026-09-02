@@ -1,7 +1,9 @@
 import { apiFetch } from "@/lib/api/client";
 
 export type RiskLevel = "low" | "medium" | "high" | "critical";
-export type ExecutionStatus = "pending_approval" | "running" | "completed" | "failed" | "rejected";
+// "blocked" — a real, hard-coded BLOCK-tier match (services/ai-service/app/tools/risk_rules.py)
+// — never offered for approval at all, unlike "rejected" which a human actively declined.
+export type ExecutionStatus = "pending_approval" | "running" | "completed" | "failed" | "rejected" | "blocked";
 
 export interface ToolOut {
   name: string;

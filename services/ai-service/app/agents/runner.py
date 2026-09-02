@@ -1,4 +1,5 @@
 import json
+import re
 import time
 from datetime import UTC, datetime
 
@@ -8,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.agents.prompts import SYSTEM_PROMPT
 from app.agents.service import list_agent_steps
 from app.ai.base import ModelMessage, ModelProvider, ToolSchema
+from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.models.agent_run import AgentRun
 from app.models.agent_step import AgentStep
@@ -17,6 +19,67 @@ from app.tools.base import list_tools
 from app.tools.service import request_tool_execution
 
 logger = get_logger(__name__)
+
+# Same real detection this project already uses client-side (cli/src/render.ts's
+# TEST_COMMAND_PATTERN/countTestAttempts) — kept as its own small pattern here rather than shared
+# across the Python/TypeScript boundary, the same way app/tools/risk_rules.py's BLOCK patterns
+# aren't shared with the CLI's own render.ts patterns either.
+_TEST_COMMAND_PATTERN = re.compile(
+    r"\b(pytest|py\.test|npm (?:run )?test|yarn test|pnpm test|vitest|jest|go test|cargo test"
+    r"|mvn test|gradle test)\b",
+    re.IGNORECASE,
+)
+_RUN_COMMAND_TOOL_NAMES = {"host.run_command", "code.run_command"}
+
+
+def _is_test_command_call(tool_name: str, arguments: dict) -> bool:
+    if tool_name not in _RUN_COMMAND_TOOL_NAMES:
+        return False
+    command = arguments.get("command")
+    return isinstance(command, str) and bool(_TEST_COMMAND_PATTERN.search(command))
+
+
+def _observation_is_failure(observation: dict) -> bool:
+    if "error" in observation:
+        return True
+    if observation.get("timed_out") is True:
+        return True
+    exit_code = observation.get("exit_code")
+    return isinstance(exit_code, int) and exit_code != 0
+
+
+def _count_test_attempts(steps: list[AgentStep]) -> int:
+    count = 0
+    for step in steps:
+        if step.type == "tool_call" and _is_test_command_call(
+            step.tool_name or "", step.content.get("arguments") or {}
+        ):
+            count += 1
+    return count
+
+
+def _last_step_is_a_failed_test_attempt(steps: list[AgentStep]) -> bool:
+    """True when the most recent persisted step is the (now-resolved) observation for a
+    test-command tool call that failed. Needed specifically for the resume path: host.run_command
+    is HIGH risk, so *every* real test attempt actually pauses for approval first — the approved
+    tool's real execution and observation happen in app/tools/service.py's
+    _resolve_paused_agent_run, not in this loop, so the retry-limit check below (which lives in
+    this loop's own immediate-execution branch) would otherwise never see it."""
+    if not steps:
+        return False
+    last = steps[-1]
+    if last.type != "observation":
+        return False
+    tool_call = next(
+        (s for s in steps if s.type == "tool_call" and s.step_number == last.step_number), None
+    )
+    if tool_call is None:
+        return False
+    if not _is_test_command_call(
+        tool_call.tool_name or "", tool_call.content.get("arguments") or {}
+    ):
+        return False
+    return _observation_is_failure(last.content)
 
 
 def _tool_schemas() -> list[ToolSchema]:
@@ -109,16 +172,53 @@ async def run_agent(
     resolved observation, so this continues at the next step number with the message history
     rebuilt from those rows, rather than re-asking the model the original goal from nothing.
     """
+    max_test_retries = get_settings().agent_max_test_retries
+
     if resume:
         steps = await list_agent_steps(session, tenant_ctx, agent_run.id)
         messages = _rebuild_messages(agent_run, steps)
         start_step = agent_run.step_count + 1
+        # Computed from persisted steps, not an in-memory counter reset to 0 on resume — a real
+        # test attempt made before a HIGH-risk approval pause (host.run_command is HIGH risk, so
+        # every test attempt through it actually does pause) still counts toward the same limit.
+        test_attempts = _count_test_attempts(steps)
+
+        # The approved tool's real execution/observation just happened in
+        # app/tools/service.py's _resolve_paused_agent_run, not in this loop's own
+        # immediate-execution branch below — so if *that* was the test attempt which used up the
+        # last retry, this has to stop right here, before ever calling the model again.
+        if test_attempts >= max_test_retries and _last_step_is_a_failed_test_attempt(steps):
+            agent_run.final_response = (
+                f"Stopped after {test_attempts} test attempts — the tests are still failing. "
+                f"Last result: {json.dumps(steps[-1].content)[:1500]}. This needs human "
+                "investigation; reporting the real outcome rather than declaring success."
+            )
+            agent_run.status = "completed"
+            agent_run.step_count = start_step
+            agent_run.completed_at = datetime.now(UTC)
+            await _record_step(
+                session,
+                agent_run,
+                start_step,
+                "final_response",
+                content={"content": agent_run.final_response},
+            )
+            logger.info(
+                "agent_run_finished",
+                tenant_id=str(tenant_ctx.tenant_id),
+                agent_run_id=str(agent_run.id),
+                status=agent_run.status,
+                step_count=agent_run.step_count,
+            )
+            await session.commit()
+            return
     else:
         messages = [
             ModelMessage(role="system", content=SYSTEM_PROMPT),
             ModelMessage(role="user", content=agent_run.goal),
         ]
         start_step = 1
+        test_attempts = 0
     tools = _tool_schemas()
     model_kwargs = {} if model_id is None or model_id == "auto" else {"model": model_id}
     start = time.monotonic()
@@ -223,6 +323,38 @@ async def run_agent(
         await _record_step(
             session, agent_run, step_number, "observation", tool_name=call.name, content=observation
         )
+
+        is_test_attempt = _is_test_command_call(call.name, call.arguments)
+        if is_test_attempt:
+            test_attempts += 1
+
+        # PRD §12's Self-Healing Engine: a real, bounded MAX_RETRIES, not an infinite retry loop
+        # riding on the generic step budget. Only stops the run here — the moment a test attempt
+        # both failed and used up the last retry — never on a passing test or a non-test step, so
+        # this never interferes with a run that isn't in a test-fix cycle at all.
+        test_attempt_exhausted = (
+            is_test_attempt
+            and _observation_is_failure(observation)
+            and test_attempts >= max_test_retries
+        )
+        if test_attempt_exhausted:
+            final_step_number = step_number + 1
+            agent_run.final_response = (
+                f"Stopped after {test_attempts} test attempt{'s' if test_attempts != 1 else ''} — "
+                "the tests are still failing. Last result: "
+                f"{json.dumps(observation)[:1500]}. This needs human investigation; reporting the "
+                "real outcome rather than declaring success."
+            )
+            agent_run.status = "completed"
+            agent_run.step_count = final_step_number
+            await _record_step(
+                session,
+                agent_run,
+                final_step_number,
+                "final_response",
+                content={"content": agent_run.final_response},
+            )
+            break
 
         messages.append(ModelMessage(role="assistant", content=f"Called tool {call.name}."))
         messages.append(

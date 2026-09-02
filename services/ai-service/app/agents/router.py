@@ -11,12 +11,20 @@ from app.agents.service import (
     list_agent_runs,
     list_agent_steps,
 )
+from app.agents.swarm import (
+    create_swarm_run,
+    get_swarm_run_or_404,
+    list_swarm_children,
+    list_swarm_runs,
+    run_swarm_in_background,
+)
 from app.ai.catalog import validate_model_id
 from app.ai.router import ModelRouter
 from app.core.logging import get_logger
 from app.db.session import AsyncSessionLocal, get_session
 from app.memory.long_term import extract_and_store_memories
 from app.schemas.agent import AgentRunDetailOut, AgentRunOut, AgentRunRequest, AgentStepOut
+from app.schemas.swarm import SwarmRunDetailOut, SwarmRunOut, SwarmRunRequest
 from app.tenancy.context import TenantContext
 from app.tenancy.dependencies import get_tenant_context
 
@@ -153,4 +161,55 @@ async def get_status(
     return AgentRunDetailOut(
         **AgentRunOut.model_validate(agent_run).model_dump(),
         steps=[AgentStepOut.model_validate(s) for s in steps],
+    )
+
+
+@router.post("/swarm", response_model=SwarmRunOut)
+async def run_swarm(
+    payload: SwarmRunRequest,
+    background_tasks: BackgroundTasks,
+    tenant_ctx: TenantContext = Depends(get_tenant_context),
+    session: AsyncSession = Depends(get_session),
+) -> SwarmRunOut:
+    """PRD §27 Multi-Agent Swarm — real decomposition + real parallel sub-agents, see
+    app/agents/swarm.py. Returns immediately with status="running"; poll
+    GET /agents/swarm/{id}/status for real per-child progress, same async pattern as /agents/run."""
+    await validate_model_id(payload.model)
+    swarm_run = await create_swarm_run(session, tenant_ctx, payload.goal, payload.model)
+    # Same reasoning as POST /agents/run's own explicit commit — the background task opens its
+    # own separate session/connection and needs this row genuinely committed first.
+    await session.commit()
+    background_tasks.add_task(
+        run_swarm_in_background,
+        tenant_ctx.tenant_id,
+        tenant_ctx.user_id,
+        tenant_ctx.role,
+        tenant_ctx.permissions,
+        swarm_run.id,
+        payload.model,
+        payload.max_subtasks,
+    )
+    return SwarmRunOut.model_validate(swarm_run)
+
+
+@router.get("/swarm", response_model=list[SwarmRunOut])
+async def list_swarms(
+    tenant_ctx: TenantContext = Depends(get_tenant_context),
+    session: AsyncSession = Depends(get_session),
+) -> list[SwarmRunOut]:
+    runs = await list_swarm_runs(session, tenant_ctx)
+    return [SwarmRunOut.model_validate(r) for r in runs]
+
+
+@router.get("/swarm/{swarm_run_id}/status", response_model=SwarmRunDetailOut)
+async def get_swarm_status(
+    swarm_run_id: uuid.UUID,
+    tenant_ctx: TenantContext = Depends(get_tenant_context),
+    session: AsyncSession = Depends(get_session),
+) -> SwarmRunDetailOut:
+    swarm_run = await get_swarm_run_or_404(session, tenant_ctx, swarm_run_id)
+    children = await list_swarm_children(session, tenant_ctx, swarm_run_id)
+    return SwarmRunDetailOut(
+        **SwarmRunOut.model_validate(swarm_run).model_dump(),
+        children=[AgentRunOut.model_validate(c) for c in children],
     )

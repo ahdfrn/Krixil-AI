@@ -1,9 +1,15 @@
 import uuid
+from collections.abc import AsyncIterator
 
+import httpx
+import respx
+
+import app.ai.router as router_module
 from app.agents.runner import run_agent
 from app.agents.service import create_agent_run
+from app.ai.base import ModelMessage, ModelProvider, ModelResponse, ToolCallRequest, ToolSchema
 from app.ai.router import ModelRouter
-from app.core.config import get_settings
+from app.core.config import Settings, get_settings
 from app.tenancy.context import TenantContext
 from tests.helpers import auth_headers, register
 
@@ -346,7 +352,7 @@ async def test_agent_run_with_unknown_model_returns_400(client):
 
 
 async def test_agent_run_with_auto_model_completes_normally(client):
-    """"auto" (or omitting model entirely) means the provider's own default — same convention
+    """ "auto" (or omitting model entirely) means the provider's own default — same convention
     ChatRequest.model already uses — so this must still work exactly like the no-model case, not
     get rejected as an "unknown" id."""
     registered = await register(client)
@@ -419,3 +425,101 @@ async def test_cancel_endpoint_is_tenant_scoped(client):
 
     cancel_resp = await client.post(f"/api/v1/agents/{run_id}/cancel", headers=headers_b)
     assert cancel_resp.status_code == 404
+
+
+class _AlwaysFailingTestCommandProvider(ModelProvider):
+    """A real, deterministic ModelProvider that only ever calls host.run_command with a failing
+    test command — MockProvider can't stand in here since it picks a tool from the *last message*,
+    which becomes the previous tool's own JSON result after the first round trip, not something
+    that naturally keeps re-matching host.run_command. This is what actually exercises the
+    MAX_RETRIES loop (app/agents/runner.py) the way a real "the model keeps retrying the same
+    failing test" session would."""
+
+    name = "mock"
+
+    async def generate(
+        self, messages: list[ModelMessage], **kwargs
+    ) -> ModelResponse:  # pragma: no cover
+        raise NotImplementedError
+
+    def stream(
+        self, messages: list[ModelMessage], **kwargs
+    ) -> AsyncIterator[str]:  # pragma: no cover
+        raise NotImplementedError
+
+    async def embeddings(self, texts: list[str]) -> list[list[float]]:  # pragma: no cover
+        raise NotImplementedError
+
+    async def tool_call(
+        self, messages: list[ModelMessage], tools: list[ToolSchema], **kwargs
+    ) -> ModelResponse:
+        return ModelResponse(
+            content="",
+            model=self.name,
+            tool_calls=[
+                ToolCallRequest(
+                    name="host.run_command", arguments={"directory": ".", "command": "pytest -q"}
+                )
+            ],
+        )
+
+    async def health_check(self) -> bool:  # pragma: no cover
+        return True
+
+
+async def test_agent_stops_after_max_test_retries_with_an_honest_final_response(
+    client, monkeypatch
+):
+    """PRD §12's Self-Healing Engine: MAX_RETRIES = 3, not an infinite loop. host.run_command is
+    HIGH risk, so each real test attempt genuinely pauses for approval first — this drives the
+    full real approve -> resume -> retry cycle three times, matching how this would actually play
+    out against a real deployment, not a shortcut that skips the approval gate."""
+    monkeypatch.setattr(get_settings(), "agent_max_test_retries", 3)
+    monkeypatch.setattr(
+        "app.tools.host_tools.get_settings",
+        lambda: Settings(host_runner_url="http://host-runner.test"),
+    )
+    fake_provider = _AlwaysFailingTestCommandProvider()
+    router_module._instances["mock"] = fake_provider
+
+    registered = await register(client)
+    headers = auth_headers(registered["access_token"])
+
+    try:
+        with respx.mock(assert_all_called=False) as mock:
+            mock.post("http://host-runner.test/run").mock(
+                return_value=httpx.Response(
+                    200,
+                    json={"stdout": "", "stderr": "1 failed", "exit_code": 1, "timed_out": False},
+                )
+            )
+
+            run_resp = await client.post(
+                "/api/v1/agents/run", json={"goal": "fix the failing test"}, headers=headers
+            )
+            run_id = run_resp.json()["id"]
+
+            for _attempt in range(3):
+                status = await client.get(f"/api/v1/agents/{run_id}/status", headers=headers)
+                body = status.json()
+                assert body["status"] == "waiting_approval"
+                execution_id = body["pending_execution_id"]
+                approve_resp = await client.post(
+                    f"/api/v1/tools/executions/{execution_id}/approve", headers=headers
+                )
+                assert approve_resp.status_code == 200
+
+        final_status = await client.get(f"/api/v1/agents/{run_id}/status", headers=headers)
+        final_body = final_status.json()
+        assert final_body["status"] == "completed"
+        assert "3 test attempts" in final_body["final_response"]
+        assert "still failing" in final_body["final_response"]
+
+        run_command_steps = [
+            s
+            for s in final_body["steps"]
+            if s["type"] == "tool_call" and s["tool_name"] == "host.run_command"
+        ]
+        assert len(run_command_steps) == 3
+    finally:
+        router_module._instances.pop("mock", None)

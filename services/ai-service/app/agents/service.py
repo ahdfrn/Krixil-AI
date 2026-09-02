@@ -16,6 +16,7 @@ async def create_agent_run(
     goal: str,
     model_id: str | None = None,
     max_steps: int | None = None,
+    swarm_run_id: uuid.UUID | None = None,
 ) -> AgentRun:
     settings = get_settings()
     # min(), not a straight override — a client-requested budget can only ever be tighter than
@@ -32,6 +33,7 @@ async def create_agent_run(
         max_steps=effective_max_steps,
         max_tool_calls=settings.agent_max_tool_calls,
         max_execution_seconds=settings.agent_max_execution_seconds,
+        swarm_run_id=swarm_run_id,
     )
     session.add(agent_run)
     await session.flush()

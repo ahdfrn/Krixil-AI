@@ -78,6 +78,9 @@ jobs:
         working-directory: services/ai-service
         run: bandit -r app/ scripts/ -ll
 
+  # Root-level npm workspace (Stack v2 Phase 8) covers cli/ and apps/web/ — package-lock.json now
+  # lives at the repo root and `npm ci` must run from there to install both workspaces. The
+  # backend (services/ai-service) stays a separate Python project, untouched by this workspace.
   lint-frontend:
     name: Lint (frontend, eslint)
     runs-on: ubuntu-latest
@@ -87,11 +90,8 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: "npm"
-          cache-dependency-path: apps/web/package-lock.json
-      - working-directory: apps/web
-        run: npm ci
-      - working-directory: apps/web
-        run: npm run lint
+      - run: npm ci
+      - run: npm run lint -w apps/web
 
   build-frontend:
     name: Build (frontend, next build)
@@ -102,13 +102,10 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: "npm"
-          cache-dependency-path: apps/web/package-lock.json
-      - working-directory: apps/web
-        run: npm ci
+      - run: npm ci
       # next build already runs TypeScript as part of the build — no separate typecheck step,
       # matching how this project verifies the frontend locally (see web-phase1.md onward).
-      - working-directory: apps/web
-        run: npm run build
+      - run: npm run build -w apps/web
         env:
           NEXT_PUBLIC_API_BASE_URL: http://localhost:8000/api/v1
 
@@ -121,11 +118,33 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: "npm"
-          cache-dependency-path: apps/web/package-lock.json
-      - working-directory: apps/web
-        run: npm ci
-      - working-directory: apps/web
-        run: npm audit --omit=dev
+      - run: npm ci
+      - run: npm audit --omit=dev -w apps/web
+
+  test-cli:
+    name: Unit tests (CLI, vitest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "npm"
+      - run: npm ci
+      - run: npm run test -w cli
+      - run: npm run typecheck -w cli
+
+  security-cli:
+    name: Security scan (CLI, npm audit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "npm"
+      - run: npm ci
+      - run: npm audit --omit=dev -w cli
 
   build-and-verify:
     name: Build image + live stack verification

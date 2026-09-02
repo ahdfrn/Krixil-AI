@@ -1,10 +1,11 @@
 import json
+from collections.abc import AsyncIterator
 
 import httpx
 import pytest
 import respx
 
-from app.ai.base import ModelMessage, ToolSchema
+from app.ai.base import ModelMessage, ModelProvider, ModelResponse, ToolSchema
 from app.ai.cloud_provider import CloudModelProvider
 
 BASE_URL = "https://mock.openai.test/v1"
@@ -21,6 +22,37 @@ async def provider():
     )
     yield p
     await p.aclose()
+
+
+class _FakeEmbeddingsProvider(ModelProvider):
+    """Same role as AnthropicModelProvider's own test double (test_anthropic_provider.py) — stands
+    in for a real embeddings delegate so these tests check "delegates when given one", not any
+    particular embeddings shape."""
+
+    name = "fake-embeddings"
+
+    def __init__(self):
+        self.calls: list[list[str]] = []
+        self.closed = False
+
+    async def generate(self, messages, **kwargs) -> ModelResponse:  # pragma: no cover - unused
+        raise NotImplementedError
+
+    def stream(self, messages, **kwargs) -> AsyncIterator[str]:  # pragma: no cover - unused
+        raise NotImplementedError
+
+    async def embeddings(self, texts: list[str]) -> list[list[float]]:
+        self.calls.append(texts)
+        return [[0.9, 0.9] for _ in texts]
+
+    async def tool_call(self, messages, tools, **kwargs) -> ModelResponse:  # pragma: no cover
+        raise NotImplementedError
+
+    async def health_check(self) -> bool:  # pragma: no cover - unused
+        return True
+
+    async def aclose(self) -> None:
+        self.closed = True
 
 
 async def test_generate_returns_content_and_usage(provider):
@@ -78,6 +110,44 @@ async def test_embeddings_returns_vectors(provider):
         result = await provider.embeddings(["a", "b"])
 
     assert result == [[0.1, 0.2], [0.3, 0.4]]
+
+
+async def test_embeddings_delegates_when_given_an_embeddings_provider():
+    # Hugging Face's router is chat-only — this is the mechanism that keeps its embeddings() call
+    # from ever hitting a /embeddings endpoint that doesn't speak this shape.
+    fake = _FakeEmbeddingsProvider()
+    p = CloudModelProvider(
+        name="huggingface",
+        base_url=BASE_URL,
+        api_key="test-key",
+        model="test-model",
+        embedding_model="unused",
+        embeddings_provider=fake,
+    )
+    try:
+        with respx.mock(assert_all_called=False) as mock:
+            route = mock.post(f"{BASE_URL}/embeddings")
+            result = await p.embeddings(["a", "b"])
+            assert route.call_count == 0  # never called its own endpoint
+    finally:
+        await p.aclose()
+
+    assert result == [[0.9, 0.9], [0.9, 0.9]]
+    assert fake.calls == [["a", "b"]]
+
+
+async def test_aclose_also_closes_the_embeddings_provider():
+    fake = _FakeEmbeddingsProvider()
+    p = CloudModelProvider(
+        name="huggingface",
+        base_url=BASE_URL,
+        api_key="test-key",
+        model="test-model",
+        embedding_model="unused",
+        embeddings_provider=fake,
+    )
+    await p.aclose()
+    assert fake.closed is True
 
 
 async def test_tool_call_sends_tools_and_parses_structured_call(provider):

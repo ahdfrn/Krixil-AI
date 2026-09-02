@@ -31,3 +31,10 @@ opentelemetry-sdk==1.44.0
 opentelemetry-instrumentation-fastapi==0.65b0
 opentelemetry-instrumentation-httpx==0.65b0
 opentelemetry-exporter-otlp-proto-http==1.44.0
+
+# MCP Hub (KIRXIL AI Stack v2 Phase 6) — the official SDK, not a hand-rolled JSON-RPC client.
+# Deliberately pinned to 1.9.4, not the latest (2.x) — the latest release forces a pydantic
+# upgrade (2.10.2 -> 2.13.5) as a side effect of adding this one feature, which is exactly the
+# kind of broad, unrelated dependency bump this project avoids; 1.9.4 is the newest release that
+# still resolves against the existing pydantic==2.10.2 pin above with zero other upgrades.
+mcp==1.9.4

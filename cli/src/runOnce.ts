@@ -7,6 +7,7 @@
 import { ApiError, KrixilApi, type AgentRun } from "./api.js";
 import { autoCheckpoint, workingTreeChangeSummary } from "./checkpoint.js";
 import { buildGoal } from "./goal.js";
+import { loadProjectConfig } from "./projectConfig.js";
 import { confirm, prompt } from "./prompt.js";
 import {
   buildToolCallArgsLookup,
@@ -18,6 +19,7 @@ import {
   trimLines,
 } from "./render.js";
 import { buildVerbInstruction } from "./verbs.js";
+import { printVerifyResult, runVerifyPipeline } from "./verify.js";
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -92,6 +94,10 @@ export async function runGoalOnce(
   model: string,
   maxSteps?: number,
   planHandoff?: PlanHandoff,
+  // Set only by `kirxil build` (index.ts) — after a genuinely completed build, runs
+  // .kirxil.yml's real `verify:` pipeline for real (see verify.ts) instead of trusting the
+  // model's own "Review" phase narration. Silently a no-op when no `verify:` list is configured.
+  runVerifyAfter?: boolean,
 ): Promise<void> {
   const goalText = buildGoal(instruction, dir);
   console.log(`› ${instruction}\n`);
@@ -162,6 +168,17 @@ export async function runGoalOnce(
   if (changes.insertions > 0 || changes.deletions > 0) summaryParts.push(`+${changes.insertions}/-${changes.deletions}`);
   console.log(summaryParts.join(" · "));
 
+  let verifyFailed = false;
+  if (runVerifyAfter && run.status === "completed") {
+    const verifySteps = loadProjectConfig()?.verify;
+    if (verifySteps && verifySteps.length > 0) {
+      console.log("\nRunning verification pipeline (.kirxil.yml's verify:)...");
+      const verifyResult = await runVerifyPipeline(verifySteps, process.cwd());
+      printVerifyResult(verifyResult);
+      verifyFailed = !verifyResult.allPassed;
+    }
+  }
+
   // Real chaining of two already-real commands (plan → build), only offered after a genuinely
   // completed plan and only in a real interactive terminal — piped/scripted `kirxil plan` output
   // must stay deterministic, not block on a prompt nothing will ever answer.
@@ -169,10 +186,18 @@ export async function runGoalOnce(
     const answer = await prompt("\nPress Enter to run `kirxil build` with this goal now, or type anything else to skip: ");
     if (answer.trim() === "") {
       console.log("");
-      await runGoalOnce(api, buildVerbInstruction("build", planHandoff.rawGoal), dir, model, maxSteps);
+      await runGoalOnce(
+        api,
+        buildVerbInstruction("build", planHandoff.rawGoal),
+        dir,
+        model,
+        maxSteps,
+        undefined,
+        true,
+      );
       return;
     }
   }
 
-  process.exitCode = run.status === "failed" ? 1 : 0;
+  process.exitCode = run.status === "failed" || verifyFailed ? 1 : 0;
 }

@@ -54,6 +54,14 @@ async def get_model_catalog(settings: Settings | None = None) -> list[ModelOut]:
         )
     elif settings.model_provider == "anthropic":
         description = f"Routes to {settings.anthropic_model} via the Anthropic API."
+    elif settings.model_provider == "openrouter":
+        description = f"Routes to {settings.openrouter_model} via OpenRouter."
+    elif settings.model_provider == "groq":
+        description = f"Routes to {settings.groq_model} via Groq."
+    elif settings.model_provider == "huggingface":
+        description = (
+            f"Routes to {settings.huggingface_model} via Hugging Face's Inference Providers router."
+        )
     else:
         description = (
             "Routes to Krixil's deterministic mock provider — no API key configured, "

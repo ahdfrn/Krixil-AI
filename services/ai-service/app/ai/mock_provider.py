@@ -20,12 +20,26 @@ def _pseudo_embedding(text: str, dim: int) -> list[float]:
     return [rng.uniform(-1.0, 1.0) for _ in range(dim)]
 
 
+# Words that appear in this run loop's own fixed boilerplate around every tool call
+# (app/agents/runner.py's "Called tool {name}."/"Tool result: {...}" messages) — a real bug,
+# caught live: adding mcp.call_tool made *every* multi-step goal spuriously re-match it forever
+# (max_tool_calls exceeded instead of a real final answer), because "Tool result: ..." always
+# contains the word "tool", and that observation text becomes the *next* round's "last user
+# message" this matcher reads. Excluded here rather than by avoiding "tool" in a real tool name —
+# "mcp.call_tool" mirrors MCP's own "tools/call" spec vocabulary and is the more honest name.
+_FRAMEWORK_BOILERPLATE_WORDS = {"tool", "result"}
+
+
 def _matches_tool(tool_name: str, lowered_message: str) -> bool:
     # \b word-boundary, not a plain substring check: "document" must not match inside
     # "document_id" (e.g. when the message is actually an error echoing a field name back) —
     # underscore counts as a word character, so \b already won't cross it, but be explicit that
     # this is intentional rather than an accident of the regex.
-    words = [w for w in re.split(r"[._]", tool_name) if len(w) > 3]
+    words = [
+        w
+        for w in re.split(r"[._]", tool_name)
+        if len(w) > 3 and w not in _FRAMEWORK_BOILERPLATE_WORDS
+    ]
     return any(re.search(rf"\b{re.escape(word)}\b", lowered_message) for word in words)
 
 

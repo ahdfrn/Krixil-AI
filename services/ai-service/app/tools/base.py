@@ -37,6 +37,14 @@ class Tool:
     required_permission: str
     handler: ToolHandler
     timeout_seconds: float = 30.0
+    # Optional, per-tool, per-*invocation* escalation on top of risk_level above — risk_level is
+    # a fixed property of the tool itself (checked once at registration), but some tools (real
+    # example: host.run_command) can receive an input that's dangerous in a way no amount of human
+    # approval should offer a "yes" to (see app/tools/risk_rules.py's docstring for why this is a
+    # narrow, heuristic backstop, not a security boundary). Returns a reason string to hard-block
+    # the request outright (see request_tool_execution's "blocked" status), or None to proceed
+    # through the normal risk_level flow as usual.
+    risk_classifier: Callable[[Any], str | None] | None = None
 
 
 _REGISTRY: dict[str, Tool] = {}

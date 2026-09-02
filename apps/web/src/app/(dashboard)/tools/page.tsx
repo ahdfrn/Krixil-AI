@@ -36,6 +36,7 @@ const STATUS_LABEL: Record<ToolExecutionOut["status"], string> = {
   completed: "Completed",
   failed: "Failed",
   rejected: "Rejected",
+  blocked: "Blocked",
 };
 
 function summarizeOutput(toolName: string, output: Record<string, unknown> | null): string | null {
@@ -225,11 +226,14 @@ export default function ToolsPage() {
                     </p>
                   )}
 
-                  {(execution.status === "failed" || execution.status === "rejected") && execution.error_message && (
-                    <p className="mt-2 border-t border-border pt-2 text-xs text-destructive">
-                      {execution.error_message}
-                    </p>
-                  )}
+                  {(execution.status === "failed" ||
+                    execution.status === "rejected" ||
+                    execution.status === "blocked") &&
+                    execution.error_message && (
+                      <p className="mt-2 border-t border-border pt-2 text-xs text-destructive">
+                        {execution.error_message}
+                      </p>
+                    )}
                 </div>
               ))
             )}

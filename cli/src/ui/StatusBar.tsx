@@ -39,7 +39,7 @@ export function StatusBar({ toolCalls, testAttempts }: { toolCalls: number; test
   }
 
   return (
-    <Box borderStyle="round" borderColor="gray" paddingX={1} justifyContent="space-between">
+    <Box borderStyle="round" borderColor="gray" paddingX={1} width="100%" justifyContent="space-between">
       <Text dimColor>{parts.join(" · ")}</Text>
       <Text dimColor>/help /model /cwd /undo /exit</Text>
     </Box>

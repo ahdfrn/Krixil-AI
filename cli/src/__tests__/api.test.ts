@@ -53,6 +53,7 @@ describe("KrixilApi", () => {
         final_response: null,
         error_message: null,
         pending_execution_id: null,
+        swarm_run_id: null,
         created_at: "2026-09-01T00:00:00Z",
         completed_at: null,
       }),
@@ -80,6 +81,7 @@ describe("KrixilApi", () => {
         final_response: null,
         error_message: null,
         pending_execution_id: null,
+        swarm_run_id: null,
         created_at: "2026-09-01T00:00:00Z",
         completed_at: null,
       }),
@@ -103,6 +105,7 @@ describe("KrixilApi", () => {
         final_response: "Done.",
         error_message: null,
         pending_execution_id: null,
+        swarm_run_id: null,
         created_at: "2026-09-01T00:00:00Z",
         completed_at: "2026-09-01T00:00:05Z",
         steps: [
@@ -234,5 +237,212 @@ describe("KrixilApi", () => {
     expect(url).toBe(`${BASE_URL}/memory/settings`);
     expect(init.method).toBe("PATCH");
     expect(JSON.parse(init.body as string)).toEqual({ enabled: true });
+  });
+
+  it("runSwarm sends the goal, model, and max_subtasks", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        id: "swarm-1",
+        goal: "make this production ready",
+        status: "running",
+        model_id: null,
+        subtask_count: 0,
+        synthesis: null,
+        error_message: null,
+        created_at: "2026-09-02T00:00:00Z",
+        completed_at: null,
+      }),
+    );
+    const api = new KrixilApi(BASE_URL, "tok-123");
+    const swarm = await api.runSwarm("make this production ready", "auto", 4);
+    expect(swarm.id).toBe("swarm-1");
+    expect(swarm.status).toBe("running");
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe(`${BASE_URL}/agents/swarm`);
+    expect(JSON.parse(init.body as string)).toEqual({
+      goal: "make this production ready",
+      model: "auto",
+      max_subtasks: 4,
+    });
+  });
+
+  it("getSwarmStatus returns the swarm and its real children", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        id: "swarm-1",
+        goal: "make this production ready",
+        status: "completed",
+        model_id: null,
+        subtask_count: 2,
+        synthesis: "Combined report.",
+        error_message: null,
+        created_at: "2026-09-02T00:00:00Z",
+        completed_at: "2026-09-02T00:01:00Z",
+        children: [
+          {
+            id: "child-1",
+            goal: "Security audit",
+            status: "completed",
+            step_count: 1,
+            tool_call_count: 0,
+            max_steps: 8,
+            max_tool_calls: 5,
+            final_response: "No issues found.",
+            error_message: null,
+            pending_execution_id: null,
+            swarm_run_id: "swarm-1",
+            created_at: "2026-09-02T00:00:00Z",
+            completed_at: "2026-09-02T00:00:30Z",
+          },
+        ],
+      }),
+    );
+    const api = new KrixilApi(BASE_URL, "tok-123");
+    const swarm = await api.getSwarmStatus("swarm-1");
+    expect(swarm.status).toBe("completed");
+    expect(swarm.synthesis).toBe("Combined report.");
+    expect(swarm.children).toHaveLength(1);
+    expect(swarm.children[0]!.goal).toBe("Security audit");
+
+    const [url] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe(`${BASE_URL}/agents/swarm/swarm-1/status`);
+  });
+
+  it("indexBrain posts the real directory and parses the started run", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        id: "index-1",
+        directory: "my-project",
+        status: "running",
+        file_count: 0,
+        symbol_count: 0,
+        chunk_count: 0,
+        error_message: null,
+        created_at: "2026-09-02T00:00:00Z",
+        completed_at: null,
+      }),
+    );
+    const api = new KrixilApi(BASE_URL, "tok-123");
+    const run = await api.indexBrain("my-project");
+    expect(run.status).toBe("running");
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe(`${BASE_URL}/brain/index`);
+    expect(JSON.parse(init.body as string)).toEqual({ directory: "my-project" });
+  });
+
+  it("getBrainStatus returns null when nothing has been indexed yet", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(null));
+    const api = new KrixilApi(BASE_URL, "tok-123");
+    expect(await api.getBrainStatus()).toBeNull();
+  });
+
+  it("getBrainStatus parses a real completed run with real counts", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        id: "index-1",
+        directory: ".",
+        status: "completed",
+        file_count: 12,
+        symbol_count: 47,
+        chunk_count: 30,
+        error_message: null,
+        created_at: "2026-09-02T00:00:00Z",
+        completed_at: "2026-09-02T00:00:20Z",
+      }),
+    );
+    const api = new KrixilApi(BASE_URL, "tok-123");
+    const run = await api.getBrainStatus();
+    expect(run?.file_count).toBe(12);
+    expect(run?.symbol_count).toBe(47);
+    expect(run?.chunk_count).toBe(30);
+  });
+
+  it("searchBrain sends the query and real limit, and parses real results", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse([
+        { path: "app.py", language: "python", content: "def handler(): ..." },
+      ]),
+    );
+    const api = new KrixilApi(BASE_URL, "tok-123");
+    const results = await api.searchBrain("handle a request", 5);
+    expect(results).toHaveLength(1);
+    expect(results[0]!.path).toBe("app.py");
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe(`${BASE_URL}/brain/search`);
+    expect(JSON.parse(init.body as string)).toEqual({ query: "handle a request", limit: 5 });
+  });
+
+  it("addMcpServer posts the real name/command/args/env", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        id: "srv-1",
+        name: "fs",
+        command: "npx",
+        args: ["-y", "@modelcontextprotocol/server-filesystem", "D:\\demo"],
+        env: {},
+        created_at: "2026-09-02T00:00:00Z",
+      }),
+    );
+    const api = new KrixilApi(BASE_URL, "tok-123");
+    const server = await api.addMcpServer(
+      "fs",
+      "npx",
+      ["-y", "@modelcontextprotocol/server-filesystem", "D:\\demo"],
+      {},
+    );
+    expect(server.name).toBe("fs");
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe(`${BASE_URL}/mcp/servers`);
+    expect(JSON.parse(init.body as string)).toEqual({
+      name: "fs",
+      command: "npx",
+      args: ["-y", "@modelcontextprotocol/server-filesystem", "D:\\demo"],
+      env: {},
+    });
+  });
+
+  it("listMcpServers returns real configured servers with redacted env", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse([
+        {
+          id: "srv-1",
+          name: "fs",
+          command: "npx",
+          args: [],
+          env: { API_TOKEN: "***" },
+          created_at: "2026-09-02T00:00:00Z",
+        },
+      ]),
+    );
+    const api = new KrixilApi(BASE_URL, "tok-123");
+    const servers = await api.listMcpServers();
+    expect(servers).toHaveLength(1);
+    expect(servers[0]!.env).toEqual({ API_TOKEN: "***" });
+  });
+
+  it("removeMcpServer sends a real DELETE by id", async () => {
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }));
+    const api = new KrixilApi(BASE_URL, "tok-123");
+    await api.removeMcpServer("srv-1");
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe(`${BASE_URL}/mcp/servers/srv-1`);
+    expect(init.method).toBe("DELETE");
+  });
+
+  it("getMcpServerTools returns the real tools a server advertises", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse([{ name: "add", description: "Add two numbers.", input_schema: {} }]),
+    );
+    const api = new KrixilApi(BASE_URL, "tok-123");
+    const tools = await api.getMcpServerTools("srv-1");
+    expect(tools).toHaveLength(1);
+    expect(tools[0]!.name).toBe("add");
+
+    const [url] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe(`${BASE_URL}/mcp/servers/srv-1/tools`);
   });
 });

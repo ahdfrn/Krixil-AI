@@ -50,6 +50,11 @@ async def request_tool_execution(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=exc.errors()
         ) from exc
 
+    if tool.risk_classifier is not None:
+        block_reason = tool.risk_classifier(validated_input)
+        if block_reason is not None:
+            return await _block(session, tenant_ctx, tool, validated_input, block_reason)
+
     requires_approval = tool.risk_level in APPROVAL_REQUIRED_LEVELS
     execution = ToolExecution(
         tenant_id=tenant_ctx.tenant_id,
@@ -80,6 +85,48 @@ async def request_tool_execution(
         return execution
 
     await _run(session, tenant_ctx, tool, execution, validated_input)
+    return execution
+
+
+async def _block(
+    session: AsyncSession,
+    tenant_ctx: TenantContext,
+    tool: Tool,
+    validated_input,
+    block_reason: str,
+) -> ToolExecution:
+    """A real, hard, terminal outcome distinct from "pending_approval" — never offered to a human
+    to approve at all (see app/tools/risk_rules.py's docstring for why). The agent loop
+    (app/agents/runner.py) doesn't need special-casing for this: its existing "anything other than
+    completed/pending_approval is an error" branch already turns this into a real observation the
+    model sees and can react to, the same as any other tool failure."""
+    execution = ToolExecution(
+        tenant_id=tenant_ctx.tenant_id,
+        requested_by=tenant_ctx.user_id,
+        tool_name=tool.name,
+        risk_level=tool.risk_level.value,
+        input=validated_input.model_dump(mode="json"),
+        status="blocked",
+        error_message=f"Blocked: {block_reason} — this command was not executed.",
+        completed_at=datetime.now(UTC),
+    )
+    session.add(execution)
+    await session.flush()
+    await record_audit_log(
+        session,
+        tenant_id=tenant_ctx.tenant_id,
+        user_id=tenant_ctx.user_id,
+        action="tool.blocked",
+        resource=tool.name,
+        metadata={"execution_id": str(execution.id), "reason": block_reason},
+    )
+    logger.warning(
+        "tool_blocked",
+        tenant_id=str(tenant_ctx.tenant_id),
+        tool_name=tool.name,
+        execution_id=str(execution.id),
+        reason=block_reason,
+    )
     return execution
 
 

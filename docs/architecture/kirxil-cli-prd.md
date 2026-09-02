@@ -170,6 +170,15 @@ Architecture  Database    Security
 - **DevOps Agent** — Docker, CI/CD, deployment, infrastructure.
 - **Documentation Agent** — README, API docs, changelog, architecture docs.
 
+> **Status**: none of these exist as separate, independently-running entities — Krixil has exactly
+> one general agent loop (`app/agents/runner.py`), the same one every verb/tool/goal in this
+> codebase uses. A "Debug Agent fixing a failing test" is really just this one loop, given a goal
+> or an observation that happens to be about debugging — real behavior, not a fabricated roster of
+> named specialists with independent competencies. Rendering a UI that implies otherwise (a tree of
+> agent names with individual status) was explicitly avoided in the CLI visual-overhaul pass — see
+> `coding-agent.md`'s "Visual overhaul" section. A real Multi-Agent Swarm (§27/PDF's differentiator
+> 02) is a separate, later, real phase — see `roadmap.md`'s "KIRXIL AI Stack v2" phase list.
+
 ## 13. Project Brain
 
 Project Brain adalah intelligence layer yang mempertahankan pemahaman struktural terhadap
@@ -188,6 +197,37 @@ Project Brain
 ├── Git History
 └── Project Memory
 ```
+
+> **Status (2026-09-02, Stack v2 Phase 5)**: File Map, a real Symbol Index, and a real Vector
+> Index/Semantic Search are built — the pieces that don't need fabrication to be genuinely useful.
+> `kirxil brain index` walks a real directory under HOST_ROOT via a new host-runner endpoint
+> (`GET /index-files`, the same recursive walk `host.search_files` already uses, capped at 500
+> files), extracts real symbols (`app/brain/symbols.py`: real stdlib `ast` parsing for Python with
+> real line numbers; a real but deliberately narrow regex heuristic for JS/TS/JSX/TSX —
+> single-line detection only, no fabricated end-of-block claim since that needs a real parser this
+> pass doesn't add), chunks real content (reusing `app/rag/chunker.py`'s `chunk_text` — the exact
+> same one document upload already uses), and embeds it via whichever `ModelProvider` is active,
+> stored in a new pgvector-backed table (`brain_chunks`, HNSW index, `alembic/versions/
+> 0014_brain.py`) that a real cosine-similarity query (`<=>`) searches. `kirxil brain search
+> "<query>"` and a new agent-callable `brain.search` tool (LOW risk) both search by real meaning,
+> not just exact text — the model doesn't need `host.search_files`' regex to find "checkout" logic
+> if it asks about "where a customer gets charged." `file_count`/`symbol_count`/`chunk_count`
+> shown are the real counts a real run actually produced — never a fabricated "12,482 files."
+> Each new successful index run replaces the tenant's previous chunks outright (a fresh full
+> re-index, not incremental — no dependency tracking to know what changed). **Live-verified**
+> against the real running stack with a real small project (a Python file with a function and a
+> class, a JS file with a function and a class, a README): indexed 3 files, found the real 6
+> symbols (4 Python + 2 JS, both counts matched exactly by hand), embedded 3 chunks; a real
+> semantic search for "how do we charge a customer's credit card" correctly ranked the file
+> containing `PaymentProcessor.charge()` first with no exact keyword overlap in the query, both
+> via the CLI and via the `brain.search` tool called directly. Backend 249/249 tests (up from
+> 236), ruff/mypy clean (search itself has zero *offline* test coverage — confirmed empirically
+> that pgvector's `<=>` operator doesn't even compile against SQLite, the same real limitation
+> `app/rag/search.py`'s own vector/hybrid search already has); host-runner 22/22 (up from 13). CLI
+> tsc clean. **Not built**: Dependency Graph, API Map, Database Map, Git History as a real graph
+> (all much bigger, separate subsystems — not attempted this pass rather than faked), and indexing
+> is scoped to `host.*`'s real HOST_ROOT tree only — the sandboxed `code.*` workspace isn't
+> indexed in this pass.
 
 ## 14. Hybrid Context Engine
 
@@ -251,6 +291,27 @@ FILE          TERMINAL      GIT           CODE              TEST          WEB
 > system prompt explicitly tells it to read failures and iterate (see "Stronger coding skills" in
 > `coding-agent.md`). WEB — `search` is real (`web.search`, needs `TAVILY_API_KEY`);
 > `documentation` (fetching/reading docs specifically) isn't a separate tool.
+>
+> **MCP Hub (2026-09-02, Stack v2 Phase 6)**: a real MCP (Model Context Protocol) client now
+> exists (`app/mcp/client.py`), built on the official `mcp` Python SDK (not a hand-rolled
+> JSON-RPC implementation) — stdio transport only in this pass, no remote HTTP/SSE servers yet.
+> Tenants register their own MCP servers (`MCPServer` model — command, args, env; `POST/GET/DELETE
+> /mcp/servers`) and the agent gets three new tools: `mcp.list_servers` (LOW), `mcp.list_tools`
+> (LOW, connects live to list a server's real tools), and `mcp.call_tool` (HIGH, approval-gated
+> like `host.run_command`). `env` values are redacted (`***`) in every API response — a tenant's
+> MCP server secrets (API tokens, etc.) are write-only through this API. New CLI commands
+> `kirxil mcp add/list/remove/tools`. Live-verified against the real running stack with a real
+> minimal Python MCP server (`tests/fixtures/mcp_test_server.py`, exposing `add`/`fail` tools):
+> registered a real server config, listed its real tools live (`GET /mcp/servers/{id}/tools`
+> returned real `add`/`fail` schemas), and called `mcp.call_tool` end-to-end — real HIGH-risk
+> approval pause, then after approval a real result (`10 + 32 = 42`) came back from the actual
+> subprocess. **Known real limitation, not yet addressed**: the `api` Docker container
+> (`python:3.11-slim`) has no Node.js/npx installed, so the most common real-world MCP servers
+> (npx-based, e.g. `@modelcontextprotocol/server-filesystem`) can't actually be configured against
+> this live deployment yet — only Python-based (or otherwise container-available) server commands
+> work today; adding Node.js to the Dockerfile is a real follow-up, not done this pass. Backend
+> 262/262 tests (up from 249), CLI 106/106, ruff/mypy/tsc clean. See `roadmap.md`'s "Phase 6 — MCP
+> Hub" entry.
 
 ## 17. Permission Engine
 
@@ -271,10 +332,25 @@ Setiap tool memiliki risk level dan policy.
 > both `kirxil run` and the interactive REPL — see `cli/README.md`'s "Permission Engine" section.
 > Approving resumes the run (the model sees the result and keeps working, via
 > `run_agent(resume=True)` rebuilding the conversation from persisted steps) rather than just
-> handing back one tool result and quitting. What's *not* built: nothing today reaches CRITICAL
-> for `host.*`/`code.*` (so BLOCK-by-default is untested there), and there's no per-tool policy
-> config — the LOW/MEDIUM/HIGH/CRITICAL → AUTO/ASK/BLOCK mapping is fixed in code, not
-> user-configurable yet.
+> handing back one tool result and quitting. There's no per-tool policy config — the
+> LOW/MEDIUM/HIGH/CRITICAL → AUTO/ASK/BLOCK mapping is fixed in code, not user-configurable yet.
+>
+> **BLOCK tier (2026-09-02, Stack v2 Phase 2)**: a real, hard-coded BLOCK outcome now exists —
+> `app/tools/risk_rules.py`'s `find_block_reason()`, a narrow pattern list (recursive force-delete
+> of `/`, `format`ting or recursively deleting a whole Windows drive, writing/reformatting a raw
+> disk device) matched against `host.run_command`/`code.run_command`'s actual command text before
+> it ever reaches the HIGH/MEDIUM approval flow above. A match sets the execution's status to a
+> new `"blocked"` value — a real terminal state distinct from `"rejected"` (a human declined) —
+> with its own `tool.blocked` audit log entry, and the agent loop feeds the real reason back to
+> the model as an observation exactly like any other tool failure (no special-casing needed in
+> `app/agents/runner.py` — its existing "anything but completed/pending_approval is an error"
+> branch already handles it). Deliberately narrow and documented as heuristic, not "the AI
+> understands intent" — the PRD's own examples draw this line (`rm -rf /` → BLOCK,
+> `DROP DATABASE production` → stays at the existing HIGH-risk approval pause, not escalated).
+> Live-verified against the real running stack: `rm -rf /` and `format C:` both returned
+> `status: "blocked"` with the real reason, host-runner was never called, and an ordinary command
+> still paused for approval as before. Backend 214/214 tests (up from 198), ruff/mypy clean. See
+> `roadmap.md`'s "Phase 2 — Security" entry.
 
 ## 18. Sandbox
 
@@ -344,7 +420,21 @@ PLAN → IMPLEMENT → TEST
 
 Maximum retry dapat dikonfigurasi, misalnya `max_retries: 5`.
 
-## 23. Visual Engineering
+> **Status (2026-09-02, Stack v2 Phase 3)**: real and bounded, not just prompt text asking the
+> model to behave. `app/agents/runner.py` now tracks real test-command attempts
+> (`host.run_command`/`code.run_command` whose command matches a real test-runner pattern —
+> `pytest`, `npm test`, etc.) across the whole run, including across a HIGH-risk approval
+> pause/resume (host.run_command always pauses, so every real attempt does too — the counter is
+> computed from persisted steps, not an in-memory value that would reset on resume). Configurable
+> via `AGENT_MAX_TEST_RETRIES` (default 3, matching this section's own `max_retries` example).
+> Once a test attempt both fails and uses up the last retry, the run stops itself right there with
+> an honest `final_response` naming the real attempt count and the real last failure — never
+> silently retries forever on the generic step budget, and never fabricates "✓ Done." Verified
+> live: a real approve → resume cycle driven through 3 real (mocked-HTTP) failing test attempts
+> ends the run with the expected message and exactly 3 `host.run_command` steps recorded
+> (`tests/test_agents.py`). What §22's own diagram implies but isn't built: the DEBUG step isn't a
+> separate specialized agent — it's still the same one general agent loop, same as everywhere else
+> in this codebase (see §12's status note on Specialized Agents not existing as distinct entities).
 
 Kirxil dapat menggunakan screenshot, design, Figma, dan browser untuk melakukan visual QA:
 Screenshot → Vision Agent → Component Detection → Code Mapping → Implementation → Browser
@@ -384,6 +474,29 @@ Backend Frontend Database
         ▼
      Security
 ```
+
+> **Status (2026-09-02, Stack v2 Phase 4)**: real, not fabricated named specialists. `kirxil swarm
+> "<goal>"` makes one real model call to decompose the goal into 2–8 independent sub-tasks
+> (`app/agents/swarm.py`'s `decompose_goal()`, asked for a JSON array, parsed defensively —
+> anything that doesn't parse cleanly is treated as "couldn't decompose," never a fabricated
+> fallback). Each real sub-task becomes an ordinary `AgentRun` — the exact same general loop every
+> other verb uses, no separate Backend/Frontend/Database "agent" implementation — run genuinely
+> concurrently via `asyncio.gather`, each in its own database session (`SwarmRun`/`swarm_run_id`,
+> `alembic/versions/0013_swarm_runs.py`). One more real model call synthesizes every child's
+> actual `final_response` into a combined report, honestly noting any sub-task that failed rather
+> than papering over it. `kirxil swarm` shows real per-child live status
+> (◉ running → ✓/✗ completed/failed) as it polls. **Live-verified against the real
+> Ollama-backed stack** (not mocked): a real "make this application production ready" goal
+> decomposed into 4 genuine sub-tasks (logging/monitoring, DB connection pooling, tests, CI/CD),
+> all four ran in parallel with real tool calls, and the synthesis was a coherent, honest report
+> that correctly called out which sub-tasks actually failed (a missing `git` repo, a DNS
+> resolution error) rather than claiming success — a second run via the CLI itself
+> (`kirxil swarm "audit this small project..."`) decomposed into 3 sub-tasks and produced an
+> equally honest report calling out missing `npm`/`pylint`/`pipdeptree`. Backend 236/236 tests
+> (up from 227), ruff/mypy clean; CLI 98/98 (up from 94), tsc clean. Not built: dependency-aware
+> sequencing (the ORCHESTRATOR → Testing → Security chain this diagram implies) — every sub-task
+> runs independently and concurrently, there's no real notion of one sub-task waiting on
+> another's result yet.
 
 ## 28. Git Intelligence
 
@@ -438,6 +551,21 @@ Private project → Local
 > project avoids everywhere else (see `app/ai/catalog.py`'s own "no fabricated catalog entries"
 > rule). The user's own preference, set once via `model.default`, is the honest version of this
 > for now.
+>
+> **Provider count (2026-09-02, Stack v2 Phase 1)**: `MODEL_PROVIDER` now has real code for six
+> providers, not two — `mock`, `openai` (any OpenAI-compatible endpoint), `ollama`, `anthropic`,
+> and two new ones added this pass: `openrouter` and `groq` (both genuinely OpenAI-compatible for
+> chat *and* embeddings, confirmed against their own docs) plus `huggingface` (OpenAI-compatible
+> for chat only — its embeddings always delegate to Ollama's, same pattern already used for
+> `anthropic`). All three new providers reuse the existing `CloudModelProvider`
+> (`app/ai/cloud_provider.py`), which gained an optional `embeddings_provider` delegation
+> parameter to make the Hugging Face case possible without a bespoke class. **None of the three
+> new providers have been verified against a real vendor API** — no API keys were available to
+> this agent — only against mocked HTTP responses (`tests/test_ai_router.py`,
+> `tests/test_cloud_provider.py`). Same honest caveat as `anthropic` before it: real code, live
+> behavior unconfirmed until a real key is supplied. Task-based auto-routing across these six
+> remains exactly as un-built as described above — more providers doesn't change the "no benchmark
+> basis" argument.
 
 ## 31. Local AI
 
@@ -776,6 +904,32 @@ kirxil/
 > **Deviation, deliberate**: Krixil's actual repo layout (`services/`, `apps/web/`, `cli/`,
 > `training/`) wasn't restructured into this `apps/`+`packages/` monorepo shape — that's a
 > separate, much larger, riskier decision than "update the CLI," not made unilaterally here.
+>
+> **Status (2026-09-02, Stack v2 Phase 8)**: this `packages/*` layout is per-concern
+> **TypeScript** packages (`agent-core`, `tool-runtime`, `permission-engine`, `model-router`, …) —
+> it was designed for the PRD's own suggested Node.js/Fastify backend (§46), which Krixil never
+> adopted. Krixil's real backend (`services/ai-service`) is Python/FastAPI, already organized
+> into the equivalent per-concern modules internally (`app/agents/`, `app/tools/`, `app/brain/`,
+> `app/mcp/`, `app/memory/`, `app/ai/`) — porting that to literal TypeScript `packages/*` would
+> mean rewriting a fully built, 262-test-covered backend into a different language for a repo-
+> layout preference, not a functional gain, so it wasn't done. What a **real, adapted** version of
+> this phase covers instead: `cli/` and `apps/web/` — the two Node.js/TypeScript projects that
+> genuinely exist — are now a real root npm workspace (root `package.json`, one `package-lock.json`
+> covering both). **Real bug found and fixed while doing this**: npm's default hoisting put `ink`
+> (only `cli` depends on it) at the workspace root, where its bundled `react-reconciler` resolved
+> `apps/web`'s React 19 instead of the React 18 `cli` actually needs — `ink`'s own
+> `peerDependencies` range (`react: >=18.0.0`) is technically satisfied by 19, so npm's conflict
+> detection never caught it; the failure only showed up as a real runtime crash
+> (`Cannot read properties of undefined (reading 'ReactCurrentOwner')`) in `cli`'s Ink-render
+> tests. Fixed with `install-strategy=nested` in a root `.npmrc` (keeps each workspace's
+> dependency tree close to where it's used instead of blindly hoisting), not a version pin —
+> the real conflict was in resolution *placement*, not an allowed version range. The crash was
+> caught by this same regression sweep before being shipped, not discovered separately. Verified
+> after the fix: CLI 106/106 tests (same suite as Phase 6, all still passing), tsc clean;
+> `apps/web` build/lint/audit all still pass unchanged. **Not done**:
+> any change to `services/ai-service`'s language or module layout, and no change to
+> `services/host-runner`, `services/sandbox-runner`, or `training/` — none of those are Node.js
+> projects this workspace concept applies to.
 
 ## 48. Product Philosophy
 
@@ -831,3 +985,14 @@ above). 05–10 are not built.
 > unbuilt — none of it exists in this platform yet, and rendering it would have been decorative UI
 > with nothing real behind it, the one thing this whole build has consistently avoided. See
 > `coding-agent.md`'s "Visual overhaul" section and `cli/README.md`.
+
+> **KIRXIL AI Stack v2 (2026-09-02).** The user shared a much larger follow-up PRD — a full
+> orchestration platform (KIRXIL Orchestrator, multi-provider Model Router, a Hermes Agent Engine
+> adapter, Multi-Agent Swarm, Project Brain, a 4-layer Memory system, MCP Hub, a 4-tier Security
+> layer with CRITICAL/BLOCK, Self-Healing, Verification, Deployment, a redesigned TUI, and a
+> `packages/*` monorepo restructure). This is tracked as a real, phased, multi-session roadmap
+> (see `roadmap.md`'s "KIRXIL AI Stack v2" entries and the plan file this was scoped from) —
+> Phase 1 (real multi-provider Model Router: OpenRouter, Groq, Hugging Face added to §30's list)
+> is done; everything else is sequenced but not started, each phase explicitly gated on real
+> infrastructure or credentials where it needs them (a real deploy target for Deployment, real MCP
+> server credentials for the MCP Hub, etc.) rather than being built as UI with nothing behind it.

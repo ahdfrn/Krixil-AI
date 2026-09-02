@@ -41,6 +41,32 @@ _PROVIDER_FACTORIES: dict[str, Callable[[], ModelProvider]] = {
         max_tokens=get_settings().anthropic_max_tokens,
         embeddings_provider=_ollama_provider(),
     ),
+    # OpenRouter and Groq are both genuinely OpenAI-compatible for chat *and* embeddings (see
+    # config.py's comments) — no embeddings_provider override needed, unlike anthropic/huggingface.
+    "openrouter": lambda: CloudModelProvider(
+        name="openrouter",
+        base_url=get_settings().openrouter_base_url,
+        api_key=get_settings().openrouter_api_key,
+        model=get_settings().openrouter_model,
+        embedding_model=get_settings().openrouter_embedding_model,
+    ),
+    "groq": lambda: CloudModelProvider(
+        name="groq",
+        base_url=get_settings().groq_base_url,
+        api_key=get_settings().groq_api_key,
+        model=get_settings().groq_model,
+        embedding_model=get_settings().groq_embedding_model,
+    ),
+    # Hugging Face's router is chat-only (OpenAI-compatible) — real embeddings delegated to
+    # Ollama, same reasoning and same pattern as "anthropic" above.
+    "huggingface": lambda: CloudModelProvider(
+        name="huggingface",
+        base_url=get_settings().huggingface_base_url,
+        api_key=get_settings().huggingface_api_key,
+        model=get_settings().huggingface_model,
+        embedding_model="",
+        embeddings_provider=_ollama_provider(),
+    ),
 }
 
 _instances: dict[str, ModelProvider] = {}
@@ -64,6 +90,15 @@ class ModelRouter:
 
         if name == "anthropic" and not settings.anthropic_api_key:
             raise ValueError("MODEL_PROVIDER=anthropic requires ANTHROPIC_API_KEY to be set")
+
+        if name == "openrouter" and not settings.openrouter_api_key:
+            raise ValueError("MODEL_PROVIDER=openrouter requires OPENROUTER_API_KEY to be set")
+
+        if name == "groq" and not settings.groq_api_key:
+            raise ValueError("MODEL_PROVIDER=groq requires GROQ_API_KEY to be set")
+
+        if name == "huggingface" and not settings.huggingface_api_key:
+            raise ValueError("MODEL_PROVIDER=huggingface requires HUGGINGFACE_API_KEY to be set")
 
         if name not in _instances:
             _instances[name] = _PROVIDER_FACTORIES[name]()

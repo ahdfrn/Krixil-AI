@@ -25,8 +25,10 @@ import { dirFromCwd } from "./goal.js";
 import { isOnPath } from "./platform.js";
 import { findConfigFile, loadProjectConfig } from "./projectConfig.js";
 import { confirm, prompt } from "./prompt.js";
+import { swarmChildStatusIcon } from "./render.js";
 import { App } from "./ui/App.js";
 import { buildVerbInstruction, VERBS } from "./verbs.js";
+import { printVerifyResult, runVerifyPipeline } from "./verify.js";
 
 const DEFAULT_BASE_URL = "http://localhost:8000/api/v1";
 const NOT_LOGGED_IN = "Not logged in. Run `kirxil login` first, or set KRIXIL_TENANT_SLUG/KRIXIL_EMAIL/KRIXIL_PASSWORD.";
@@ -70,7 +72,12 @@ async function requireApi(): Promise<KrixilApi> {
  * modelOverride is undefined unless `--model` was actually typed — precedence is
  * `--model` > `.kirxil.yml`'s `model.default` (PRD §34) > "auto". `agent.max_iterations` from
  * the same file, if present, is forwarded as this run's step budget. */
-async function runInstruction(instruction: string, dirOverride: string | undefined, modelOverride: string | undefined): Promise<void> {
+async function runInstruction(
+  instruction: string,
+  dirOverride: string | undefined,
+  modelOverride: string | undefined,
+  runVerifyAfter = false,
+): Promise<void> {
   const client = await resolveClientOrEnv();
   if (!client) {
     console.error(NOT_LOGGED_IN);
@@ -80,7 +87,15 @@ async function runInstruction(instruction: string, dirOverride: string | undefin
   const model = modelOverride ?? projectConfig?.model?.default ?? "auto";
   const maxSteps = projectConfig?.agent?.max_iterations;
   const { runGoalOnce } = await import("./runOnce.js");
-  await runGoalOnce(client.api, instruction, dirOverride ?? dirFromCwd(client.hostRoot), model, maxSteps);
+  await runGoalOnce(
+    client.api,
+    instruction,
+    dirOverride ?? dirFromCwd(client.hostRoot),
+    model,
+    maxSteps,
+    undefined,
+    runVerifyAfter,
+  );
 }
 
 /** `kirxil plan <goal>` specifically — same pipeline as runInstruction, but keeps the raw goal
@@ -167,6 +182,245 @@ program
   });
 
 program
+  .command("swarm <goal>")
+  .description(
+    "PRD §27 Multi-Agent Swarm — a real model call decomposes the goal into independent " +
+      "sub-tasks, each runs as a real, ordinary agent run concurrently, then one more real " +
+      "model call synthesizes a combined report. Not fabricated named specialist agents — " +
+      "every sub-task is the same general agent loop, differentiated only by its own real goal.",
+  )
+  .option("--model <id>", "Model id from `kirxil models`, or \"auto\".")
+  .option("--max-subtasks <n>", "Maximum sub-tasks to decompose into (2-8, default 5).", (v) => Number.parseInt(v, 10))
+  .action(async (goal: string, opts: { model?: string; maxSubtasks?: number }) => {
+    const api = await requireApi();
+    const projectConfig = loadProjectConfig();
+    const model = opts.model ?? projectConfig?.model?.default ?? "auto";
+
+    console.log(`› ${goal}\n`);
+    let started;
+    try {
+      started = await api.runSwarm(goal, model, opts.maxSubtasks);
+    } catch (err) {
+      console.error(err instanceof ApiError ? `Couldn't start that swarm: ${err.detail}` : "Couldn't start that swarm.");
+      process.exitCode = 1;
+      return;
+    }
+    console.log("Decomposing into sub-tasks and running them in parallel...\n");
+
+    const printedStatus = new Map<string, string>();
+    for (;;) {
+      let swarm;
+      try {
+        swarm = await api.getSwarmStatus(started.id);
+      } catch (err) {
+        console.error(err instanceof ApiError ? `Lost track of that swarm: ${err.detail}` : "Lost track of that swarm.");
+        process.exitCode = 1;
+        return;
+      }
+      for (const child of swarm.children) {
+        if (printedStatus.get(child.id) !== child.status) {
+          printedStatus.set(child.id, child.status);
+          console.log(`${swarmChildStatusIcon(child.status)} ${child.goal} — ${child.status}`);
+        }
+      }
+      if (swarm.status !== "running") {
+        console.log("");
+        if (swarm.status === "completed") {
+          console.log(`${swarm.subtask_count} sub-tasks completed.\n`);
+          console.log("SYNTHESIS");
+          console.log(swarm.synthesis ?? "");
+        } else {
+          console.error(swarm.error_message ?? "Swarm failed.");
+          process.exitCode = 1;
+        }
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
+  });
+
+const brainCmd = program
+  .command("brain")
+  .description(
+    "PRD §13 Project Brain — real file/symbol indexing and real semantic search over the " +
+      "current project, backed by pgvector. `kirxil brain index` builds/refreshes it; " +
+      "`kirxil brain search \"<query>\"` searches by meaning, not just exact text.",
+  );
+
+brainCmd
+  .command("index")
+  .description("(Re)index the current directory — a fresh full index each time, not incremental.")
+  .option("--dir <dir>", "Folder to index, relative to HOST_ROOT (default: current directory).")
+  .action(async (opts: { dir?: string }) => {
+    const client = await resolveClientOrEnv();
+    if (!client) {
+      console.error(NOT_LOGGED_IN);
+      process.exitCode = 1;
+      return;
+    }
+    const directory = opts.dir ?? dirFromCwd(client.hostRoot);
+    console.log(`Indexing ${directory === "." ? "the current directory" : directory}...`);
+    let started;
+    try {
+      started = await client.api.indexBrain(directory);
+    } catch (err) {
+      console.error(err instanceof ApiError ? `Couldn't start indexing: ${err.detail}` : "Couldn't start indexing.");
+      process.exitCode = 1;
+      return;
+    }
+    for (;;) {
+      let run;
+      try {
+        run = await client.api.getBrainStatus();
+      } catch (err) {
+        console.error(err instanceof ApiError ? `Lost track of that index run: ${err.detail}` : "Lost track of that index run.");
+        process.exitCode = 1;
+        return;
+      }
+      if (!run || run.id !== started.id || run.status === "running") {
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        continue;
+      }
+      if (run.status === "completed") {
+        console.log(
+          `Indexed ${run.file_count} file${run.file_count === 1 ? "" : "s"}, found ` +
+            `${run.symbol_count} real symbol${run.symbol_count === 1 ? "" : "s"}, embedded ` +
+            `${run.chunk_count} chunk${run.chunk_count === 1 ? "" : "s"}.`,
+        );
+      } else {
+        console.error(run.error_message ?? "Indexing failed.");
+        process.exitCode = 1;
+      }
+      return;
+    }
+  });
+
+brainCmd
+  .command("search <query>")
+  .description("Real semantic search over the current real index (run `kirxil brain index` first).")
+  .option("--limit <n>", "Maximum results (default 10).", (v) => Number.parseInt(v, 10))
+  .action(async (query: string, opts: { limit?: number }) => {
+    const api = await requireApi();
+    try {
+      const results = await api.searchBrain(query, opts.limit);
+      if (results.length === 0) {
+        console.log("No matches — have you run `kirxil brain index` yet?");
+        return;
+      }
+      for (const r of results) {
+        console.log(`${r.path}${r.language ? ` (${r.language})` : ""}`);
+        const preview = r.content.slice(0, 200).replace(/\n/g, " ");
+        console.log(`  ${preview}${r.content.length > 200 ? "…" : ""}\n`);
+      }
+    } catch (err) {
+      console.error(err instanceof ApiError ? err.detail : "Couldn't search.");
+      process.exitCode = 1;
+    }
+  });
+
+const mcpCmd = program
+  .command("mcp")
+  .description(
+    "PRD §10 MCP Hub — real, tenant-configured MCP (Model Context Protocol) servers (stdio " +
+      "transport). `kirxil mcp add` configures one; the agent reaches it through the real " +
+      "mcp.list_tools/mcp.call_tool tools (HIGH risk, approval-gated, same as host.run_command).",
+  );
+
+mcpCmd
+  .command("add <name> <command> [args...]")
+  .description(
+    "Add a real MCP server, e.g. `kirxil mcp add fs npx -- -y @modelcontextprotocol/server-filesystem D:\\some\\path`.",
+  )
+  .option("--env <key=value>", "Environment variable to pass to the server (repeatable).", (val: string, prev: string[]) => [...prev, val], [] as string[])
+  .action(async (name: string, command: string, args: string[], opts: { env: string[] }) => {
+    const api = await requireApi();
+    const env: Record<string, string> = {};
+    for (const pair of opts.env) {
+      const eq = pair.indexOf("=");
+      if (eq === -1) {
+        console.error(`Invalid --env value '${pair}' — expected KEY=VALUE.`);
+        process.exitCode = 1;
+        return;
+      }
+      env[pair.slice(0, eq)] = pair.slice(eq + 1);
+    }
+    try {
+      const server = await api.addMcpServer(name, command, args, env);
+      console.log(`Added '${server.name}' (${server.command} ${server.args.join(" ")}).`);
+    } catch (err) {
+      console.error(err instanceof ApiError ? err.detail : "Couldn't add that server.");
+      process.exitCode = 1;
+    }
+  });
+
+mcpCmd
+  .command("list")
+  .description("List this tenant's configured real MCP servers.")
+  .action(async () => {
+    const api = await requireApi();
+    try {
+      const servers = await api.listMcpServers();
+      if (servers.length === 0) {
+        console.log("No MCP servers configured yet — see `kirxil mcp add`.");
+        return;
+      }
+      for (const s of servers) {
+        const envPart = Object.keys(s.env).length > 0 ? ` env: ${Object.keys(s.env).join(", ")}` : "";
+        console.log(`${s.name}  ${s.command} ${s.args.join(" ")}${envPart}`);
+      }
+    } catch (err) {
+      console.error(err instanceof ApiError ? err.detail : "Couldn't list servers.");
+      process.exitCode = 1;
+    }
+  });
+
+mcpCmd
+  .command("remove <name>")
+  .description("Remove a configured MCP server by name.")
+  .action(async (name: string) => {
+    const api = await requireApi();
+    try {
+      const servers = await api.listMcpServers();
+      const server = servers.find((s) => s.name === name);
+      if (!server) {
+        console.error(`No MCP server named '${name}'.`);
+        process.exitCode = 1;
+        return;
+      }
+      await api.removeMcpServer(server.id);
+      console.log(`Removed '${name}'.`);
+    } catch (err) {
+      console.error(err instanceof ApiError ? err.detail : "Couldn't remove that server.");
+      process.exitCode = 1;
+    }
+  });
+
+mcpCmd
+  .command("tools <name>")
+  .description("Real, live connection to a configured server — lists whatever it actually advertises right now.")
+  .action(async (name: string) => {
+    const api = await requireApi();
+    try {
+      const servers = await api.listMcpServers();
+      const server = servers.find((s) => s.name === name);
+      if (!server) {
+        console.error(`No MCP server named '${name}'.`);
+        process.exitCode = 1;
+        return;
+      }
+      const tools = await api.getMcpServerTools(server.id);
+      if (tools.length === 0) {
+        console.log(`'${name}' advertises no tools.`);
+        return;
+      }
+      for (const t of tools) console.log(`${t.name}  —  ${t.description}`);
+    } catch (err) {
+      console.error(err instanceof ApiError ? err.detail : "Couldn't reach that server.");
+      process.exitCode = 1;
+    }
+  });
+
+program
   .command("run <goal>")
   .description("Run one goal and exit — for scripting, not the interactive feel of plain `kirxil`.")
   .option("--model <id>", "Model id from `kirxil models`, or \"auto\". Defaults to .kirxil.yml's model.default, else \"auto\".")
@@ -193,7 +447,9 @@ for (const verb of VERBS) {
         return;
       }
       const instruction = buildVerbInstruction(verb.name, argument ?? "");
-      await runInstruction(instruction, opts.dir, opts.model);
+      // `build` alone auto-runs .kirxil.yml's real `verify:` pipeline afterward (verify.ts) — a
+      // real, deterministic check instead of trusting the model's own "Review" phase narration.
+      await runInstruction(instruction, opts.dir, opts.model, verb.name === "build");
     });
 }
 
@@ -361,7 +617,8 @@ program
           "In effect:\n" +
           "  project.name          (not set — folder name shown instead)\n" +
           '  model.default         (not set — "auto" used instead)\n' +
-          "  agent.max_iterations  (not set — this deployment's own default step budget used instead)\n\n" +
+          "  agent.max_iterations  (not set — this deployment's own default step budget used instead)\n" +
+          "  verify                (not set — `kirxil verify`/`kirxil build` have nothing to run)\n\n" +
           "See cli/README.md's \"Project config\" section for the format.",
       );
       return;
@@ -378,6 +635,9 @@ program
     console.log(`  model.default         = ${config.model?.default ?? '(not set — "auto" used instead)'}`);
     console.log(
       `  agent.max_iterations  = ${config.agent?.max_iterations ?? "(not set — this deployment's own default step budget used instead)"}`,
+    );
+    console.log(
+      `  verify                = ${config.verify && config.verify.length > 0 ? config.verify.join(" && ") : "(not set — `kirxil verify`/`kirxil build` have nothing to run)"}`,
     );
   });
 
@@ -499,6 +759,26 @@ program
       console.error(result.reason);
       process.exitCode = 1;
     }
+  });
+
+program
+  .command("verify")
+  .description(
+    "Run .kirxil.yml's `verify:` list for real, in order, stopping at the first real failure " +
+      "(PRD §13's Verification Engine — real commands, not a model's own narrated claim).",
+  )
+  .action(async () => {
+    const steps = loadProjectConfig()?.verify;
+    if (!steps || steps.length === 0) {
+      console.log(
+        "No `verify:` list in .kirxil.yml — nothing to run. Add one, e.g.:\n\n" +
+          "verify:\n  - npm run typecheck\n  - npm run lint\n  - npm test\n  - npm run build",
+      );
+      return;
+    }
+    const result = await runVerifyPipeline(steps, process.cwd());
+    printVerifyResult(result);
+    process.exitCode = result.allPassed ? 0 : 1;
   });
 
 program.action(async () => {

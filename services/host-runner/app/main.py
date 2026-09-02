@@ -20,6 +20,7 @@ from app.fs import (  # noqa: E402  (must follow load_dotenv() — fs.py reads o
     read_file,
     resolve_host_path,
     search_files,
+    walk_indexable_files,
     write_file,
 )
 
@@ -115,6 +116,16 @@ async def get_search(pattern: str, path: str = ".") -> list[SearchResultOut]:
     except HostPathError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+@app.get("/index-files", response_model=list[FileContentOut])
+async def get_index_files(path: str = ".") -> list[FileContentOut]:
+    """Real recursive walk for Project Brain indexing (services/ai-service/app/brain/) — every
+    real, decodable-as-text file under `path`, capped at fs.py's MAX_INDEX_FILES."""
+    try:
+        return [FileContentOut(**f) for f in walk_indexable_files(path)]
+    except HostPathError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
 

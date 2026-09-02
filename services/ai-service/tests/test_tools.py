@@ -17,6 +17,10 @@ async def test_list_tools_returns_registered_tools(client):
     assert resp.status_code == 200
     names = {t["name"] for t in resp.json()}
     assert names == {
+        "brain.search",
+        "mcp.list_servers",
+        "mcp.list_tools",
+        "mcp.call_tool",
         "knowledge.search",
         "usage.get_summary",
         "document.delete",
