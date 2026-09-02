@@ -1,14 +1,18 @@
-"""Runs natively on Windows, not in Docker — see docs/architecture/coding-agent.md ("Real
-host-folder access") for why. Binds to 127.0.0.1 only (see run.py / README); this service has no
-auth of its own, so it must never be reachable from outside this machine. Everything under
-HOST_ROOT is fully readable/writable/executable, with no approval step and no sandbox — the one
-remaining guardrail is path confinement to HOST_ROOT itself (app/fs.py)."""
+"""Native, loopback-only host I/O. All operations require a shared API key.
+Project headers select a request-local filesystem boundary; shell execution is not sandboxed.
+Approval is enforced upstream by the authenticated ai-service tool pipeline.
+"""
 
 import subprocess
+import os
+import secrets
+from urllib.parse import unquote
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, status
 from pydantic import BaseModel, Field
+from fastapi.responses import JSONResponse
+from app.scope import validate_workspace, workspace_root
 
 load_dotenv()
 
@@ -25,6 +29,41 @@ from app.fs import (  # noqa: E402  (must follow load_dotenv() — fs.py reads o
 )
 
 app = FastAPI(title="krixil-host-runner")
+
+
+@app.middleware("http")
+async def authenticated_workspace(request, call_next):
+    key = os.environ.get("HOST_RUNNER_API_KEY", "")
+    selected = request.headers.get("X-Krixil-Workspace")
+    if request.url.path != "/health":
+        if not key or not secrets.compare_digest(
+            request.headers.get("X-Krixil-Host-Key", ""), key
+        ):
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Host-runner authentication required"},
+            )
+    try:
+        root = validate_workspace(unquote(selected)) if selected else None
+    except (ValueError, OSError):
+        return JSONResponse(
+            status_code=400,
+            content={
+                "detail": "Invalid workspace. Select an existing local project directory, not a drive or system folder."
+            },
+        )
+    token = workspace_root.set(root)
+    try:
+        return await call_next(request)
+    finally:
+        workspace_root.reset(token)
+
+
+@app.get("/workspace")
+async def selected_workspace():
+    if workspace_root.get() is None:
+        raise HTTPException(status_code=400, detail="Workspace header required")
+    return {"root": str(host_root())}
 
 
 class FileEntryOut(BaseModel):
@@ -73,7 +112,9 @@ async def get_files(path: str = ".") -> list[FileEntryOut]:
     try:
         return [FileEntryOut(**e) for e in list_files(path)]
     except HostPathError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+        ) from exc
 
 
 @app.get("/files/content", response_model=FileContentOut)
@@ -81,7 +122,9 @@ async def get_file_content(path: str) -> FileContentOut:
     try:
         return FileContentOut(path=path, content=read_file(path))
     except HostPathError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+        ) from exc
     except FileNotFoundError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail=f"'{path}' does not exist"
@@ -93,7 +136,9 @@ async def post_file(payload: WriteFileRequest) -> FileContentOut:
     try:
         write_file(payload.path, payload.content)
     except HostPathError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+        ) from exc
     return FileContentOut(path=payload.path, content=payload.content)
 
 
@@ -102,7 +147,9 @@ async def remove_file(path: str) -> None:
     try:
         delete_file(path)
     except HostPathError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+        ) from exc
     except IsADirectoryError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail=f"'{path}' is a directory"
@@ -114,9 +161,13 @@ async def get_search(pattern: str, path: str = ".") -> list[SearchResultOut]:
     try:
         return [SearchResultOut(**r) for r in search_files(pattern, path)]
     except HostPathError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+        ) from exc
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+        ) from exc
 
 
 @app.get("/index-files", response_model=list[FileContentOut])
@@ -126,7 +177,9 @@ async def get_index_files(path: str = ".") -> list[FileContentOut]:
     try:
         return [FileContentOut(**f) for f in walk_indexable_files(path)]
     except HostPathError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+        ) from exc
 
 
 @app.post("/run", response_model=RunResult)
@@ -134,7 +187,9 @@ async def run_command(payload: RunRequest) -> RunResult:
     try:
         cwd = resolve_host_path(payload.directory)
     except HostPathError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+        ) from exc
     cwd.mkdir(parents=True, exist_ok=True)
 
     timed_out = False
@@ -154,4 +209,6 @@ async def run_command(payload: RunRequest) -> RunResult:
         stderr = exc.stderr or ""
         exit_code = -1
 
-    return RunResult(stdout=stdout, stderr=stderr, exit_code=exit_code, timed_out=timed_out)
+    return RunResult(
+        stdout=stdout, stderr=stderr, exit_code=exit_code, timed_out=timed_out
+    )

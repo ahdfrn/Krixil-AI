@@ -170,6 +170,16 @@ export interface ApprovalPrompt {
  */
 export function describeApprovalPrompt(toolName: string, riskLevel: string, args: Record<string, unknown>): ApprovalPrompt {
   const normalized = riskLevel.toLowerCase();
+  if (toolName.startsWith("hermes.")) {
+    return {
+      title: `UNMAPPED HERMES TOOL: ${toolName}`,
+      // JSON escaping keeps control characters in remote arguments from changing the terminal.
+      detail: `${riskLevel.toUpperCase()} risk — fallback classification. Allow once only.\n` +
+        `Scope is remote and not verified by Krixil. Inspect the full request:\n${JSON.stringify(args, null, 2)}`,
+      riskLevel: normalized,
+      requireTypedConfirmation: normalized === "critical",
+    };
+  }
   return {
     title: summarizeToolCall(toolName, args),
     detail: `${riskLevel.toUpperCase()} risk — approve to run it for real, or reject to stop this goal.`,
@@ -198,7 +208,7 @@ export function describeObservation(step: AgentStep, toolCallArgs?: Record<strin
   const toolName = step.tool_name;
 
   if (content.status === "pending_approval") return { summary: "Paused for approval", body: [], tone: "muted" };
-  if ("error" in content) {
+  if (content.error) {
     const message = String(content.error);
     // A real BLOCK-tier outcome (app/tools/risk_rules.py) — never offered for approval at all,
     // worth a distinct summary from an ordinary tool failure. error_message's own real prefix
@@ -280,6 +290,8 @@ export function swarmChildStatusIcon(status: string): string {
       return "✗";
     case "waiting_approval":
       return "⏸";
+    case "queued":
+      return "⏳";
     case "cancelled":
     case "stopped":
       return "○";

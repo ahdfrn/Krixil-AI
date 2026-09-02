@@ -27,6 +27,7 @@ from app.models.brain_chunk import BrainChunk
 from app.models.brain_index_run import BrainIndexRun
 from app.rag.chunker import chunk_text
 from app.tenancy.context import TenantContext
+from app.workspace.scope import host_headers
 
 logger = get_logger(__name__)
 model_router = ModelRouter()
@@ -51,6 +52,10 @@ async def _embed_in_batches(provider: ModelProvider, texts: list[str]) -> list[l
 async def create_brain_index_run(
     session: AsyncSession, tenant_ctx: TenantContext, directory: str
 ) -> BrainIndexRun:
+    if tenant_ctx.workspace_root:
+        raise HTTPException(
+            status_code=400, detail="Brain indexing is not yet available in project-scoped sessions"
+        )
     index_run = BrainIndexRun(
         tenant_id=tenant_ctx.tenant_id,
         user_id=tenant_ctx.user_id,
@@ -125,7 +130,9 @@ async def run_brain_index_in_background(
     async with AsyncSessionLocal() as session:
         index_run = await get_brain_index_run_or_404(session, tenant_ctx, index_run_id)
         try:
-            async with httpx.AsyncClient(timeout=settings.host_runner_timeout_seconds) as client:
+            async with httpx.AsyncClient(
+                timeout=settings.host_runner_timeout_seconds, headers=host_headers()
+            ) as client:
                 response = await client.get(
                     f"{settings.host_runner_url}/index-files", params={"path": directory}
                 )

@@ -12,7 +12,9 @@ import { testOutcomesLabel, type TestOutcome } from "../render.js";
 
 const POLL_MS = 2000;
 
-export function StatusBar({ toolCalls, testOutcomes }: { toolCalls: number; testOutcomes: TestOutcome[] }) {
+export function StatusBar({ toolCalls, testOutcomes, activity = "Ready", awaitingApproval = false }: {
+  toolCalls: number; testOutcomes: TestOutcome[]; activity?: string; awaitingApproval?: boolean;
+}) {
   const [changes, setChanges] = useState<ChangeSummary | null>(null);
 
   useEffect(() => {
@@ -42,9 +44,9 @@ export function StatusBar({ toolCalls, testOutcomes }: { toolCalls: number; test
   }
 
   return (
-    <Box borderStyle="round" borderColor="gray" paddingX={1} width="100%" justifyContent="space-between">
-      <Text dimColor>{parts.join(" · ")}</Text>
-      <Text dimColor>/help /model /cwd /expand /undo /exit</Text>
+    <Box flexDirection="column" paddingX={1} width="100%">
+      <Text><Text color={awaitingApproval ? "yellow" : "cyan"}>{activity}</Text><Text dimColor> · {parts.join(" · ")}</Text></Text>
+      <Text dimColor>{awaitingApproval ? "Review the action above · Esc rejects" : "Ctrl+K commands · ↑/↓ history · Ctrl+C stop/exit"}</Text>
     </Box>
   );
 }

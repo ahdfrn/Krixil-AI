@@ -18,6 +18,21 @@ function step(overrides: Partial<AgentStep>): AgentStep {
   return { step_number: 1, type: "observation", tool_name: null, content: {}, created_at: "2026-09-01T00:00:00Z", ...overrides };
 }
 
+describe("Hermes rendering", () => {
+  it("shows the complete approval payload, including nested command and scope", () => {
+    const result = describeApprovalPrompt("hermes.execute", "high", {
+      args: { command: "npm install example", directory: "D:/Krixil" },
+    });
+    expect(result.detail).toContain("npm install example");
+    expect(result.detail).toContain("D:/Krixil");
+    expect(result.detail).toContain("Allow once only");
+    expect(result.title).toContain("UNMAPPED HERMES TOOL");
+  });
+  it("does not label error:false as a failure", () => {
+    expect(describeObservation(step({content: {error: false, duration: 0.05}})).tone).not.toBe("error");
+  });
+});
+
 describe("summarizeToolCall", () => {
   it("summarizes a run_command call as Bash(...)", () => {
     expect(summarizeToolCall("host.run_command", { command: "pytest -q" })).toBe("Bash(pytest -q)");
@@ -340,6 +355,7 @@ describe("swarmChildStatusIcon", () => {
     expect(swarmChildStatusIcon("completed")).toBe("✓");
     expect(swarmChildStatusIcon("failed")).toBe("✗");
     expect(swarmChildStatusIcon("waiting_approval")).toBe("⏸");
+    expect(swarmChildStatusIcon("queued")).toBe("⏳");
     expect(swarmChildStatusIcon("cancelled")).toBe("○");
     expect(swarmChildStatusIcon("stopped")).toBe("○");
   });

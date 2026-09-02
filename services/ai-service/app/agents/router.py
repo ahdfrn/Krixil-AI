@@ -1,9 +1,10 @@
 import uuid
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, BackgroundTasks, Depends
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agents.hermes_runtime import run_hermes_agent_in_background
 from app.agents.runner import run_agent
 from app.agents.service import (
     create_agent_run,
@@ -15,16 +16,19 @@ from app.agents.swarm import (
     create_swarm_run,
     get_swarm_run_or_404,
     list_swarm_children,
+    list_swarm_dependencies,
     list_swarm_runs,
     run_swarm_in_background,
 )
 from app.ai.catalog import validate_model_id
+from app.ai.fallback import ProvidersUnavailable
 from app.ai.router import ModelRouter
+from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.db.session import AsyncSessionLocal, get_session
 from app.memory.long_term import extract_and_store_memories
 from app.schemas.agent import AgentRunDetailOut, AgentRunOut, AgentRunRequest, AgentStepOut
-from app.schemas.swarm import SwarmRunDetailOut, SwarmRunOut, SwarmRunRequest
+from app.schemas.swarm import SwarmChildOut, SwarmRunDetailOut, SwarmRunOut, SwarmRunRequest
 from app.tenancy.context import TenantContext
 from app.tenancy.dependencies import get_tenant_context
 
@@ -67,12 +71,16 @@ async def run_agent_in_background(
             await run_agent(session, tenant_ctx, provider, agent_run, model_id, resume=resume)
             final_response = agent_run.final_response
             goal = agent_run.goal
-    except Exception:
+    except Exception as error:
         logger.error("agent_run_background_failed", agent_run_id=str(agent_run_id), exc_info=True)
         async with AsyncSessionLocal() as fail_session:
             failed_run = await get_agent_run_or_404(fail_session, tenant_ctx, agent_run_id)
             failed_run.status = "failed"
-            failed_run.error_message = "Unexpected error while running the agent."
+            failed_run.error_message = (
+                str(error)
+                if isinstance(error, ProvidersUnavailable)
+                else "Unexpected error while running the agent."
+            )
             failed_run.completed_at = datetime.now(UTC)
             await fail_session.commit()
         return
@@ -100,9 +108,23 @@ async def run(
     tenant_ctx: TenantContext = Depends(get_tenant_context),
     session: AsyncSession = Depends(get_session),
 ) -> AgentRunOut:
+    if tenant_ctx.workspace_root and payload.runtime != "native":
+        raise HTTPException(
+            status_code=400, detail="Project-scoped sessions currently require the native runtime"
+        )
     await validate_model_id(payload.model)
+    if payload.runtime == "hermes" and not get_settings().hermes_base_url:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail='runtime="hermes" requires HERMES_BASE_URL to be configured.',
+        )
     agent_run = await create_agent_run(
-        session, tenant_ctx, payload.goal, payload.model, payload.max_steps
+        session,
+        tenant_ctx,
+        payload.goal,
+        payload.model,
+        payload.max_steps,
+        runtime=payload.runtime,
     )
     # Explicit commit here, not left to get_session()'s own post-yield commit — FastAPI runs a
     # yield-dependency's cleanup (including that commit) *after* the response has already been
@@ -110,15 +132,26 @@ async def run(
     # opens its own separate session/connection, so it needs this row to be genuinely committed,
     # not just flushed within this request's still-open transaction, before it can see it.
     await session.commit()
-    background_tasks.add_task(
-        run_agent_in_background,
-        tenant_ctx.tenant_id,
-        tenant_ctx.user_id,
-        tenant_ctx.role,
-        tenant_ctx.permissions,
-        agent_run.id,
-        payload.model,
-    )
+    if payload.runtime == "hermes":
+        background_tasks.add_task(
+            run_hermes_agent_in_background,
+            tenant_ctx.tenant_id,
+            tenant_ctx.user_id,
+            tenant_ctx.role,
+            tenant_ctx.permissions,
+            agent_run.id,
+            payload.model,
+        )
+    else:
+        background_tasks.add_task(
+            run_agent_in_background,
+            tenant_ctx.tenant_id,
+            tenant_ctx.user_id,
+            tenant_ctx.role,
+            tenant_ctx.permissions,
+            agent_run.id,
+            payload.model,
+        )
     return AgentRunOut.model_validate(agent_run)
 
 
@@ -138,6 +171,20 @@ async def cancel(
     if agent_run.status == "running":
         agent_run.status = "cancelled"
         await session.commit()
+        if agent_run.runtime == "hermes" and agent_run.external_run_id:
+            # Native's cancel is a pure DB flag the loop itself polls every step; Hermes's own
+            # run needs an explicit real stop call, or it never notices a Krixil-side-only
+            # status change and just keeps running server-side.
+            from app.agents.hermes_client import HermesClientError, stop_hermes_run
+
+            try:
+                await stop_hermes_run(agent_run.external_run_id)
+            except HermesClientError:
+                logger.warning(
+                    "hermes_cancel_stop_failed",
+                    agent_run_id=str(agent_run_id),
+                    run_id=agent_run.external_run_id,
+                )
     return AgentRunOut.model_validate(agent_run)
 
 
@@ -175,6 +222,10 @@ async def run_swarm(
     app/agents/swarm.py. Returns immediately with status="running"; poll
     GET /agents/swarm/{id}/status for real per-child progress, same async pattern as /agents/run."""
     await validate_model_id(payload.model)
+    if tenant_ctx.workspace_root:
+        raise HTTPException(
+            status_code=400, detail="Swarm is not yet available in project-scoped sessions"
+        )
     swarm_run = await create_swarm_run(session, tenant_ctx, payload.goal, payload.model)
     # Same reasoning as POST /agents/run's own explicit commit — the background task opens its
     # own separate session/connection and needs this row genuinely committed first.
@@ -209,7 +260,15 @@ async def get_swarm_status(
 ) -> SwarmRunDetailOut:
     swarm_run = await get_swarm_run_or_404(session, tenant_ctx, swarm_run_id)
     children = await list_swarm_children(session, tenant_ctx, swarm_run_id)
+    deps_by_child = await list_swarm_dependencies(session, tenant_ctx, [c.id for c in children])
     return SwarmRunDetailOut(
         **SwarmRunOut.model_validate(swarm_run).model_dump(),
-        children=[AgentRunOut.model_validate(c) for c in children],
+        children=[
+            SwarmChildOut(
+                **AgentRunOut.model_validate(c).model_dump(),
+                depends_on=deps_by_child.get(c.id, []),
+                original_goal=c.original_goal,
+            )
+            for c in children
+        ],
     )

@@ -7,12 +7,14 @@
  */
 import React from "react";
 import { render } from "ink-testing-library";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { CommandPalette } from "../ui/CommandPalette.js";
+import { PlanPanel } from "../ui/PlanPanel.js";
 import { StatusBar } from "../ui/StatusBar.js";
 import { RunSummary, Transcript } from "../ui/Transcript.js";
 import { SwarmTree } from "../ui/SwarmTree.js";
 import { App } from "../ui/App.js";
-import type { AgentStep, AgentRunOut, KrixilApi, SwarmRunDetail } from "../api.js";
+import type { AgentStep, KrixilApi, SwarmChildOut, SwarmRunDetail } from "../api.js";
 
 const UP = "[A";
 const DOWN = "[B";
@@ -22,7 +24,7 @@ function step(overrides: Partial<AgentStep>): AgentStep {
   return { step_number: 1, type: "observation", tool_name: null, content: {}, created_at: "2026-09-01T00:00:00Z", ...overrides };
 }
 
-function swarmChild(overrides: Partial<AgentRunOut>): AgentRunOut {
+function swarmChild(overrides: Partial<SwarmChildOut>): SwarmChildOut {
   return {
     id: "child-1",
     goal: "sub-task",
@@ -35,8 +37,11 @@ function swarmChild(overrides: Partial<AgentRunOut>): AgentRunOut {
     error_message: null,
     pending_execution_id: null,
     swarm_run_id: "swarm-1",
+    runtime: "native",
     created_at: "2026-09-01T00:00:00Z",
     completed_at: null,
+    depends_on: [],
+    original_goal: null,
     ...overrides,
   };
 }
@@ -52,7 +57,7 @@ describe("StatusBar", () => {
     unmount();
     expect(frame).toContain("3 tool calls");
     expect(frame).toContain("tests ✗ ✓ (passing)");
-    expect(frame).toContain("/help /model /cwd /expand /undo /exit");
+    expect(frame).toContain("Ctrl+K commands");
     // The regression this guards: summary and hints must not be directly adjacent with no
     // whitespace between them (e.g. "...(passing)/help..." instead of "...(passing)   /help...").
     expect(frame).not.toMatch(/\)\/help/);
@@ -64,6 +69,99 @@ describe("StatusBar", () => {
     unmount();
     expect(frame).toContain("0 tool calls");
     expect(frame).not.toContain("tests");
+  });
+});
+
+describe("Command palette and responsive panels", () => {
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 20));
+
+  it("filters commands and inserts a selection without executing it", async () => {
+    const onSelect = vi.fn();
+    const screen = render(<CommandPalette onSelect={onSelect} onClose={() => {}} />);
+    try {
+      await tick();
+      screen.stdin.write("undo");
+      await tick();
+      expect(screen.lastFrame()).toContain("/undo");
+      expect(screen.lastFrame()).not.toContain("/model");
+      expect(onSelect).not.toHaveBeenCalled();
+      screen.stdin.write(ENTER);
+      await tick();
+      expect(onSelect).toHaveBeenCalledWith("/undo");
+    } finally { screen.unmount(); }
+  });
+
+  it("handles empty search results and Escape", async () => {
+    const onSelect = vi.fn();
+    const onClose = vi.fn();
+    const screen = render(<CommandPalette onSelect={onSelect} onClose={onClose} />);
+    try {
+      await tick();
+      screen.stdin.write("no-such-command");
+      await tick();
+      screen.stdin.write(DOWN);
+      screen.stdin.write(ENTER);
+      await tick();
+      expect(screen.lastFrame()).toContain("No matching commands");
+      expect(onSelect).not.toHaveBeenCalled();
+      screen.stdin.write("\u001b");
+      await tick();
+      expect(onClose).toHaveBeenCalled();
+    } finally { screen.unmount(); }
+  });
+
+  it("opens with Ctrl+K, supports arrows, and preserves the draft on Escape", async () => {
+    const api = { listModels: async () => [] } as unknown as KrixilApi;
+    const screen = render(<App api={api} hostRoot="D:\\" initialDir="." />);
+    try {
+      await tick();
+      screen.stdin.write("my draft");
+      await tick();
+      screen.stdin.write("\u000b");
+      await tick();
+      expect(screen.lastFrame()).toContain("COMMAND PALETTE");
+      screen.stdin.write("\u001b");
+      await tick();
+      expect(screen.lastFrame()).toContain("> my draft");
+      screen.stdin.write("\u000b");
+      await tick();
+      screen.stdin.write(DOWN);
+      await tick();
+      screen.stdin.write(ENTER);
+      await tick();
+      expect(screen.lastFrame()).toContain("> /model");
+      expect(screen.lastFrame()).not.toContain("COMMAND PALETTE");
+    } finally { screen.unmount(); }
+  });
+
+  it("does not submit unknown slash commands to the agent", async () => {
+    const runAgent = vi.fn();
+    const api = { listModels: async () => [], runAgent } as unknown as KrixilApi;
+    const screen = render(<App api={api} hostRoot="D:\\" initialDir="." />);
+    try {
+      await tick();
+      screen.stdin.write("/typo");
+      await tick();
+      screen.stdin.write(ENTER);
+      await tick();
+      expect(screen.lastFrame()).toContain("Unknown command: /typo");
+      expect(runAgent).not.toHaveBeenCalled();
+    } finally { screen.unmount(); }
+  });
+
+  it("renders a wrapping plan without fixed-width text borders", () => {
+    const screen = render(<PlanPanel planText="Inspect the project, update the CLI, and run tests." />);
+    expect(screen.lastFrame()).toContain("ENGINEERING PLAN");
+    expect(screen.lastFrame()).toContain("Inspect the project");
+    screen.unmount();
+  });
+
+  it("shows contextual approval hints instead of normal input shortcuts", () => {
+    const screen = render(<StatusBar toolCalls={1} testOutcomes={[]} activity="Awaiting approval" awaitingApproval />);
+    expect(screen.lastFrame()).toContain("Awaiting approval");
+    expect(screen.lastFrame()).toContain("Esc rejects");
+    expect(screen.lastFrame()).not.toContain("Ctrl+K commands");
+    screen.unmount();
   });
 });
 
@@ -151,6 +249,40 @@ describe("SwarmTree", () => {
     unmount();
     expect(frame).toContain("The decomposition call failed.");
   });
+
+  it("shows a queued child's real original goal and what it's waiting on", async () => {
+    const swarm: SwarmRunDetail = {
+      id: "swarm-3",
+      goal: "build and test",
+      status: "running",
+      model_id: null,
+      subtask_count: 2,
+      synthesis: null,
+      error_message: null,
+      created_at: "2026-09-01T00:00:00Z",
+      completed_at: null,
+      children: [
+        swarmChild({ id: "a", goal: "Build the backend", status: "running" }),
+        swarmChild({
+          id: "b",
+          goal: "Context from prerequisite sub-task(s)...\n\nYour sub-task: Write tests",
+          original_goal: "Write tests",
+          status: "queued",
+          depends_on: ["a"],
+        }),
+      ],
+    };
+    const { lastFrame, unmount } = render(
+      <SwarmTree api={fakeApi(swarm)} goal={swarm.goal} swarmRunId={swarm.id} />,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const frame = lastFrame() ?? "";
+    unmount();
+    // The dependent's real, concise original_goal is shown, not its rewritten/augmented goal.
+    expect(frame).toContain("Write tests");
+    expect(frame).not.toContain("Context from prerequisite");
+    expect(frame).toContain("waiting on: Build the backend");
+  });
 });
 
 describe("Transcript expand/collapse", () => {
@@ -184,6 +316,50 @@ describe("Transcript expand/collapse", () => {
 
 describe("App input history (Up/Down)", () => {
   const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+  it("requires fresh consent for each public request and never sends normal history", async () => {
+    const publicChat = vi.fn().mockResolvedValue({ content: "Public answer", model: "nemotron", provider: "openrouter" });
+    const chat = vi.fn().mockResolvedValue({ conversation_id: "private-id", message: { content: "Hello" }, model: "mock" });
+    const api = { listModels: async () => [], publicChat, chat } as unknown as KrixilApi;
+    const screen = render(<App api={api} hostRoot="D:\\" initialDir="Krixil" />);
+    try {
+      await tick();
+      screen.stdin.write("hello"); await tick(); screen.stdin.write(ENTER); await tick();
+      screen.stdin.write("/public Explain recursion"); await tick(); screen.stdin.write(ENTER); await tick();
+      expect(screen.lastFrame()).toContain("Do NOT send secrets");
+      expect(publicChat).not.toHaveBeenCalled();
+      screen.stdin.write("n"); await tick();
+      expect(publicChat).not.toHaveBeenCalled();
+      screen.stdin.write("/public Explain recursion"); await tick(); screen.stdin.write(ENTER); await tick();
+      screen.stdin.write("y"); await tick();
+      expect(publicChat).toHaveBeenCalledWith("Explain recursion", expect.any(AbortSignal));
+      screen.stdin.write("hello again"); await tick(); screen.stdin.write(ENTER); await tick();
+      expect(chat).toHaveBeenLastCalledWith("hello again", "private-id", "auto", expect.any(AbortSignal));
+    } finally { screen.unmount(); }
+  });
+
+  it("routes plain text to chat and retains conversation context, never an agent run", async () => {
+    const chat = vi.fn().mockResolvedValue({ conversation_id: "conversation-1", message: { content: "Halo!" }, model: "mock" });
+    const runAgent = vi.fn();
+    const api = { listModels: async () => [], chat, runAgent } as unknown as KrixilApi;
+    const screen = render(<App api={api} hostRoot="D:\\" initialDir="Krixil" />);
+    try {
+      await tick();
+      screen.stdin.write("halo"); await tick();
+      screen.stdin.write(ENTER); await tick();
+      expect(chat).toHaveBeenNthCalledWith(1, "halo", undefined, "auto", expect.any(AbortSignal));
+      screen.stdin.write("siapa saya"); await tick();
+      screen.stdin.write(ENTER); await tick();
+      expect(chat).toHaveBeenNthCalledWith(2, "siapa saya", "conversation-1", "auto", expect.any(AbortSignal));
+      expect(runAgent).not.toHaveBeenCalled();
+      expect(screen.lastFrame()).toContain("Halo!");
+      screen.stdin.write("/new"); await tick();
+      screen.stdin.write(ENTER); await tick();
+      screen.stdin.write("halo"); await tick();
+      screen.stdin.write(ENTER); await tick();
+      expect(chat).toHaveBeenNthCalledWith(3, "halo", undefined, "auto", expect.any(AbortSignal));
+    } finally { screen.unmount(); }
+  });
 
   it("recalls previously submitted commands with Up, and Down walks back toward the live draft", async () => {
     const fakeApi = { listModels: async () => [] } as unknown as KrixilApi;

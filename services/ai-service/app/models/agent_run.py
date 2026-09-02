@@ -19,8 +19,25 @@ class AgentRun(UUIDPKMixin, TimestampMixin, Base):
         GUID(), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
     goal: Mapped[str] = mapped_column(Text, nullable=False)
-    # "running" | "completed" | "stopped" | "waiting_approval" | "failed" | "cancelled"
+    workspace_root: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    # Set only when a Multi-Agent Swarm child's `goal` gets overwritten with injected prerequisite
+    # context (app/agents/swarm.py's _inject_dependency_context) — the original, concise sub-task
+    # text, preserved for display (SwarmTree.tsx, synthesize_results). None for every other run,
+    # and for a swarm child with no dependencies (its goal is never rewritten).
+    original_goal: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # "queued" | "running" | "completed" | "stopped" | "waiting_approval" | "failed" | "cancelled"
+    # "queued" only ever applies to a Multi-Agent Swarm child waiting on another sub-task's real
+    # result — every other run starts "running" immediately (see create_agent_run). Hermes's own
+    # distinct remote states ("waiting_for_approval", "stopping") are normalized down onto this
+    # same vocabulary at the translation layer (app/agents/hermes_runtime.py) — no new values.
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="running")
+    # "native" | "hermes" — which AgentRuntime actually executes this run (see
+    # app/agents/hermes_runtime.py). "native" for every run created before this column existed and
+    # every run that doesn't explicitly request Hermes.
+    runtime: Mapped[str] = mapped_column(String(20), nullable=False, default="native")
+    # Hermes's own run_id string (POST /v1/runs's response) — needed to poll/stream/approve/stop
+    # against the real Hermes API. None for a native run.
+    external_run_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
     # None/"auto" mean "provider's configured default" (see AgentRunRequest.model). Persisted
     # (unlike before) so a run that pauses on approval can resume on the same model it started
     # on — the background task that resumes it (app/tools/service.py's approve path) has no

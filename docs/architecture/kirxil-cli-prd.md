@@ -996,3 +996,36 @@ above). 05–10 are not built.
 > is done; everything else is sequenced but not started, each phase explicitly gated on real
 > infrastructure or credentials where it needs them (a real deploy target for Deployment, real MCP
 > server credentials for the MCP Hub, etc.) rather than being built as UI with nothing behind it.
+
+> **KIRXIL AI Stack v2 update (2026-09-02).** By the end of this same day, Phases 1–6 and 8 of the
+> plan above are all done (see `roadmap.md`'s "KIRXIL AI Stack v2" section for the full
+> phase-by-phase account) — only Phase 7 (Deployment) remains genuinely blocked on a real deploy
+> target. Three concrete gaps documented inside already-"done" phases were then closed in one pass:
+> **MCP remote transport** (§16 — `sse`/`http`, not just `stdio`; Node.js added to the `api`
+> container's Dockerfile so `npx`-based MCP servers, the most common real-world kind, actually run;
+> live-verified with the real `@modelcontextprotocol/server-filesystem` package fetched via `npx`
+> inside the real container), **Swarm dependency-aware sequencing** (§27 — a sub-task can now
+> really depend on 1+ earlier sub-tasks' real output, via a real `swarm_task_dependencies` edge
+> table and a `graphlib`-based scheduler; a dependent child's `goal` is rewritten with its real
+> prerequisites' real completed output before it starts, and it still runs — honestly informed,
+> never silently skipped — if a prerequisite failed), and a **Hermes Agent Engine research spike**
+> (§8's "Hermes Agent Engine adapter" — resolved as **do not integrate now**: the real
+> `NousResearch/hermes-agent` repo, confirmed directly, is a standalone CLI/daemon with no pip
+> library, no REST API, and no MCP-*server* mode — it's an MCP *client* like Krixil itself, not
+> something with any embeddable "AgentRuntime interface" surface today, and its own install method
+> is a curl-pipe-to-bash script, which this project has an explicit prior lesson against running
+> unread — see `learning-and-memory.md`'s Unsloth-installer note. Revisit only if Hermes ships a
+> library/API/MCP-server mode). See `roadmap.md`'s "KIRXIL AI Stack v2" section, Phases 9–10, for
+> the full implementation and live-verification account of the two real code changes.
+>
+> **Correction (2026-09-03): Hermes DOES have a real HTTP+SSE API.** The "no REST API" finding
+> immediately above was outdated — the user supplied direct links into Hermes's real source
+> proving it ships a documented "Runs API" (`POST /v1/runs`, SSE events, approval, stop). Built
+> against it for real as **Phase 11 — Hermes Runtime**: a new `AgentRuntime` alternative
+> (`app/agents/hermes_client.py`/`hermes_runtime.py`), Hermes still never imported as a Python
+> dependency (its exact-pinned `pydantic`/`httpx` genuinely conflict with this service's own
+> pins — confirmed, not just theorized), so it runs as its own service reached over that real API.
+> Krixil's own Permission Engine stays the sole approval authority even for a Hermes-originated
+> tool call — proven end to end through the exact same, unmodified
+> `/tools/executions/{id}/approve` endpoint every other tool uses. See
+> [`hermes-runtime.md`](hermes-runtime.md) and `roadmap.md`'s "Phase 11 — Hermes Runtime" entry.

@@ -15,7 +15,12 @@ async def _mcp_list_servers_handler(
     session: AsyncSession, tenant_ctx: TenantContext, params: MCPListServersInput
 ) -> dict:
     servers = await list_mcp_servers(session, tenant_ctx)
-    return {"servers": [{"name": s.name, "command": s.command} for s in servers]}
+    return {
+        "servers": [
+            {"name": s.name, "transport": s.transport, "command": s.command, "url": s.url}
+            for s in servers
+        ]
+    }
 
 
 register_tool(

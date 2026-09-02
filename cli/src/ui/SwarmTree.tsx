@@ -48,6 +48,7 @@ export function SwarmTree({ api, goal, swarmRunId }: { api: KrixilApi; goal: str
   }, [api, swarmRunId, exit]);
 
   const children = swarm?.children ?? [];
+  const goalById = new Map(children.map((c) => [c.id, c.original_goal ?? c.goal]));
 
   return (
     <Box flexDirection="column">
@@ -58,12 +59,17 @@ export function SwarmTree({ api, goal, swarmRunId }: { api: KrixilApi; goal: str
       </Text>
       {children.map((child, i) => {
         const branch = i === children.length - 1 ? "└─" : "├─";
+        const label = child.original_goal ?? child.goal;
+        const waitingOn =
+          child.status === "queued" && child.depends_on.length > 0
+            ? ` — waiting on: ${child.depends_on.map((id) => goalById.get(id) ?? id).join(", ")}`
+            : "";
         return (
           <Text key={child.id}>
             {"  "}
-            {branch} {swarmChildStatusIcon(child.status)} {child.goal}{" "}
+            {branch} {swarmChildStatusIcon(child.status)} {label}{" "}
             <Text dimColor>
-              ({child.tool_call_count} tool call{child.tool_call_count === 1 ? "" : "s"} — {child.status})
+              ({child.tool_call_count} tool call{child.tool_call_count === 1 ? "" : "s"} — {child.status}){waitingOn}
             </Text>
           </Text>
         );

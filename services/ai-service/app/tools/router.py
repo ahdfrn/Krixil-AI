@@ -76,21 +76,33 @@ async def approve(
     # committed, not just flushed within this request's still-open transaction, before it starts.
     await session.commit()
     if resume_target is not None:
-        # Local import — app/agents/router.py already imports from app/tools/service.py
+        # Local imports — app/agents/router.py already imports from app/tools/service.py
         # (indirectly, via app/agents/runner.py), so importing it back at module load time here
         # would be circular. Only needed on the one path that actually resumes a run.
-        from app.agents.router import run_agent_in_background
+        if resume_target.runtime == "hermes":
+            from app.agents.hermes_runtime import resume_hermes_agent_in_background
 
-        background_tasks.add_task(
-            run_agent_in_background,
-            tenant_ctx.tenant_id,
-            tenant_ctx.user_id,
-            tenant_ctx.role,
-            tenant_ctx.permissions,
-            resume_target.id,
-            resume_target.model_id,
-            resume=True,
-        )
+            background_tasks.add_task(
+                resume_hermes_agent_in_background,
+                tenant_ctx.tenant_id,
+                tenant_ctx.user_id,
+                tenant_ctx.role,
+                tenant_ctx.permissions,
+                resume_target.id,
+            )
+        else:
+            from app.agents.router import run_agent_in_background
+
+            background_tasks.add_task(
+                run_agent_in_background,
+                tenant_ctx.tenant_id,
+                tenant_ctx.user_id,
+                tenant_ctx.role,
+                tenant_ctx.permissions,
+                resume_target.id,
+                resume_target.model_id,
+                resume=True,
+            )
     return ToolExecutionOut.model_validate(execution)
 
 

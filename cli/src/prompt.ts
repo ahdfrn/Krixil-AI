@@ -7,22 +7,26 @@
 import readline from "node:readline";
 
 export function prompt(question: string, hidden = false): Promise<string> {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
     if (hidden) {
       // readline has no built-in masked input — muting output writes while this question is
       // active is the standard workaround (same trade-off most lightweight CLIs make rather than
       // pulling in a dedicated password-prompt dependency for one field).
       const rlAny = rl as unknown as { _writeToOutput: (s: string) => void };
-      const originalWrite = rlAny._writeToOutput.bind(rl);
-      rlAny._writeToOutput = (stringToWrite: string) => {
-        if (stringToWrite.includes(question)) originalWrite(stringToWrite);
-      };
+      process.stdout.write(question);
+      rlAny._writeToOutput = () => {};
     }
-    rl.question(question, (answer) => {
+    let answered = false;
+    rl.on("SIGINT", () => rl.close());
+    rl.on("close", () => {
+      if (!answered) reject(new Error("Input dibatalkan."));
+    });
+    rl.question(hidden ? "" : question, (answer) => {
+      answered = true;
       rl.close();
       if (hidden) process.stdout.write("\n");
-      resolve(answer.trim());
+      resolve(hidden ? answer : answer.trim());
     });
   });
 }

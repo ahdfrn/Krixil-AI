@@ -49,12 +49,17 @@ export function StepView({
 }) {
   if (step.type === "tool_call") {
     return (
-      <Text>
-        <Text color="cyan" bold>
-          ⏺{" "}
+      <Box flexDirection="column">
+        {typeof step.content.provider === "string" && typeof step.content.model === "string" && (
+          <Text dimColor>{step.content.provider} · {step.content.model}</Text>
+        )}
+        <Text>
+          <Text color="cyan" bold>
+            ⏺{" "}
+          </Text>
+          {summarizeToolCall(step.tool_name, (step.content.arguments as Record<string, unknown>) ?? {})}
         </Text>
-        {summarizeToolCall(step.tool_name, (step.content.arguments as Record<string, unknown>) ?? {})}
-      </Text>
+      </Box>
     );
   }
   if (step.type === "observation") {
@@ -63,7 +68,10 @@ export function StepView({
   }
   // final_response
   return (
-    <Box marginTop={1}>
+    <Box marginTop={1} flexDirection="column">
+      {typeof step.content.provider === "string" && typeof step.content.model === "string" && (
+        <Text dimColor>{step.content.provider} · {step.content.model}</Text>
+      )}
       <Text>{String(step.content.content ?? "")}</Text>
     </Box>
   );

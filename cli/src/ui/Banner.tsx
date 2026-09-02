@@ -5,6 +5,7 @@ import { join, basename } from "node:path";
 import figlet from "figlet";
 import type { KrixilApi } from "../api.js";
 import { VERSION } from "../version.js";
+import { useTerminalWidth } from "./useTerminalWidth.js";
 
 // Rendered once at module load, not per-render — figlet's own text layout is pure and static for
 // a fixed string/font, no reason to redo the work on every keystroke.
@@ -68,13 +69,18 @@ export function Banner({
   hostRoot,
   model,
   projectName,
+  runtime = "native",
+  compact = false,
 }: {
   api: KrixilApi;
   dir: string;
   hostRoot: string;
   model: string;
   projectName?: string;
+  runtime?: string;
+  compact?: boolean;
 }) {
+  const width = useTerminalWidth();
   const cwd = process.cwd();
   const counts = topLevelCounts(cwd);
   // null = still checking, not yet "offline" — a real probe against the real backend
@@ -99,13 +105,13 @@ export function Banner({
   return (
     <Box flexDirection="column" marginBottom={1}>
       <Box flexDirection="column">
-        {WORDMARK_LINES.map((line, i) => (
+        {compact || width < 72 ? <Text bold color="#8b7bff">KIRXIL AI · Engineering workspace</Text> : WORDMARK_LINES.map((line, i) => (
           <Text key={i} bold color={lerpHex(GRADIENT_FROM, GRADIENT_TO, WORDMARK_LINES.length <= 1 ? 0 : i / (WORDMARK_LINES.length - 1))}>
             {line}
           </Text>
         ))}
       </Box>
-      <Box justifyContent="space-between" width={39}>
+      <Box justifyContent="space-between" width={Math.min(39, width)}>
         <Text dimColor>v{VERSION}</Text>
         <Text color={online === null ? "yellow" : online ? "green" : "red"}>
           {online === null ? "○ checking" : online ? "● online" : "○ offline"}
@@ -114,7 +120,7 @@ export function Banner({
       <Box height={1} />
       <Text>
         <Text dimColor>Project </Text>
-        {projectName ?? basename(cwd)}
+        {projectName ?? (basename(cwd) || cwd)}
       </Text>
       <Text>
         <Text dimColor>Branch  </Text>
@@ -122,7 +128,7 @@ export function Banner({
       </Text>
       <Text>
         <Text dimColor>Model   </Text>
-        {model}
+        {model} <Text dimColor>· {runtime}</Text>
       </Text>
       {counts && (
         <Text dimColor>
@@ -131,8 +137,10 @@ export function Banner({
       )}
       <Box height={1} />
       <Text dimColor>
-        Working in {dir} under {hostRoot}. /help for commands, /exit to quit.
+        Working in {dir} under {hostRoot}.
       </Text>
+      {!compact && <Text dimColor>Tab switches Chat / Code. Press / on an empty prompt to choose a model.</Text>}
+      {basename(cwd) === "" && <Text color="yellow">Drive root selected. Open your project folder before using /code.</Text>}
     </Box>
   );
 }

@@ -686,3 +686,149 @@ tests unaffected. See `kirxil-cli-prd.md`'s §47 status note.
 `services/sandbox-runner`, `training/` — none are Node.js projects a workspace applies to; the
 PRD's literal `packages/*` TypeScript-package split remains a documented, deliberate deviation,
 not attempted.
+
+**Hermes Agent Engine — research spike, resolved as "do not integrate" (2026-09-02).** §8's
+"Hermes Agent Engine adapter" needed a real look at its actual integration surface before being
+scoped as a phase. Confirmed the real repo directly:
+[NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent) — real, MIT-licensed,
+active. But it's architecturally a standalone CLI/daemon (`hermes` commands, a `hermes gateway`
+process for Telegram/Discord/Slack/WhatsApp/Signal), not a library: no pip-installable package
+with a programmatic API, no documented REST/HTTP surface, and no one-shot non-interactive
+invocation mode. It connects *to* MCP servers (an MCP client, the same role Krixil's own
+`app/mcp/client.py` plays) but does not itself run as an MCP server another client could register
+and call — so even Krixil's own real MCP Hub (Phase 6) isn't a usable integration path today. Its
+own documented install method is `curl ... | bash` / `irm ... | iex` — this project has an
+explicit prior lesson against running an installer script unread (see `learning-and-memory.md`'s
+Unsloth-installer note), and did not make an exception here. **Conclusion: no real, safe
+"AgentRuntime interface" surface exists to integrate against right now** — building one would mean
+either shelling out to an undocumented, interactive-shaped CLI and hoping it behaves like a
+one-shot tool, or waiting on Hermes itself to ship a library/API/MCP-server mode. Not attempted.
+Revisit if that changes.
+
+> **Correction (2026-09-03).** The "no documented REST/HTTP surface" finding above was outdated —
+> the user supplied direct links into Hermes's real source
+> (`gateway/platforms/api_server.py`/`api_server_runs.py`) proving it does ship a real, documented
+> HTTP+SSE "Runs API" alongside ACP and a TUI-gateway JSON-RPC protocol. The *conclusion* that
+> Hermes shouldn't be imported as a Python dependency still stands (now for a different, harder
+> reason: its own exact-pinned `pydantic`/`httpx` versions genuinely conflict with this service's
+> pins) — see the "Phase 11 — Hermes Runtime" entry below for what actually got built against the
+> real HTTP+SSE surface once this was corrected.
+
+**Phase 9 — MCP remote transport (sse/http) + Node.js in the api container (done, 2026-09-02).**
+Closes Phase 6's own documented limitation: MCP was stdio-only, and the `api` container had no
+Node.js, so the most common real-world MCP servers (npx-based, e.g.
+`@modelcontextprotocol/server-filesystem`) couldn't actually be registered. `app/mcp/client.py`'s
+single `_server_params` chokepoint became a `_connect` dispatcher across `stdio_client`,
+`sse_client`, and `streamablehttp_client` (all three already present in the pinned `mcp==1.9.4`
+SDK — verified directly against the installed source, no new dependency) — `list_server_tools`/
+`call_server_tool`'s public signatures stayed unchanged, so `app/tools/mcp_tools.py`'s three agent
+tools needed zero control-flow changes. New `MCPServer.transport`/`url`/`headers` columns
+(migration `0016_mcp_remote_transport`, `command` now nullable), a first `model_validator` in this
+codebase enforcing the right fields per transport in `MCPServerCreate`, and `headers` redacted in
+every API response the same way `env` already is. **Real bug caught only by testing against a
+genuine remote server, not by review**: `sse_client`/`streamablehttp_client` run their connection
+inside an anyio `TaskGroup`, so a real connection failure (bad URL, unreachable host) surfaces as
+an `ExceptionGroup` wrapping the real `httpx.HTTPError`, not the error itself — the existing
+`except httpx.HTTPError` clause silently didn't catch it; fixed with a small recursive
+`_find_http_error` unwrapper. `Dockerfile` gained `nodejs npm` in the existing single `apt-get
+install` layer (Debian bookworm's packaged Node, confirmed `v20.19.2`/npm `9.2.0` via a real
+`docker build` — comfortably above `npx`'s `>=18` floor). New tests follow this codebase's
+established zero-SDK-mocking MCP philosophy: a new `tests/fixtures/mcp_test_server_remote.py`
+(the same real `add`/`fail` server, run over real sse/streamable-http on an ephemeral port) plus
+`tests/test_mcp_client_remote.py` — real subprocess, real protocol round-trip, including a real
+unreachable-URL case that exercises the `ExceptionGroup` fix. **Documented, not silently accepted,
+new trust-boundary note**: a tenant-supplied remote `url` means `GET /mcp/servers/{id}/tools` (not
+approval-gated, only `mcp.call_tool` is) can make the `api` container issue a real outbound
+request anywhere — accepted as within MCP registration's existing privileged trust boundary
+(stdio already lets a tenant run an arbitrary local command), an egress allowlist is a real,
+separate follow-up if this deployment ever needs to isolate tenants' network reach from each
+other. **Live-verified against the real running stack, not just offline**: rebuilt the `api`
+image, ran the real migration against the real Postgres, registered a real `npx -y
+@modelcontextprotocol/server-filesystem` server against a real container-local directory, and
+`GET /mcp/servers/{id}/tools` returned the package's real 14 advertised tools (`read_file`,
+`write_file`, `search_files`, etc.) — genuine `npx` package fetch + real MCP stdio handshake
+inside the container, the exact real-world case this phase existed to unblock. Backend 273/273
+tests (up from 262), ruff/mypy clean. CLI (`api.ts`'s Zod schema, `kirxil mcp add --transport
+sse/http --url --header`) updated to match; CLI 125/125, tsc clean.
+
+**Phase 10 — Swarm dependency-aware sequencing (done, 2026-09-02).** Closes Phase 4's own
+documented gap and PRD §27's own diagram (Backend/Frontend/Database → Testing → Security — a
+genuine fan-out/join/sequential shape, not full independence). `decompose_goal`'s prompt and
+`_parse_subtasks` now accept `[{"goal": ..., "depends_on": [0-based indices into this same
+array]}, ...]` instead of a flat string array — array *position* is the index, deliberately not a
+model-supplied id, removing a whole class of "model's id disagreed with its own position"
+ambiguity. Same honest-failure discipline as before, extended: a self-reference, dangling
+reference (including one only made dangling by `max_subtasks` truncation), or a cycle (detected
+via stdlib `graphlib.TopologicalSorter(...).prepare()`) fails the *whole* decomposition, never
+silently drops or reinterprets one bad edge. A new real edge table, `swarm_task_dependencies`
+(migration `0017_swarm_task_dependencies`, own `tenant_id` for direct query scoping — same shape
+as `AgentStep`, chosen over a JSON column since a dependency is genuinely many-to-many), replaces
+the flat `asyncio.gather` fan-out with a `graphlib`-driven incremental scheduler (`_run_dag`) —
+the same validated graph structure doubles as both validator and runtime scheduler, one
+implementation not two; a child starts the instant its own prerequisites finish, not on a fixed
+wave boundary. A dependent child's `AgentRun.goal` is rewritten once, in place, with its real
+prerequisites' real completed output before it starts (new `AgentRun.original_goal` column
+preserves the concise text for display) — chosen over threading a prompt-override parameter
+through `run_agent`, since the HIGH-risk approval-resume path (`app/tools/service.py`) rebuilds
+its first message from `agent_run.goal` with zero swarm awareness and would silently lose an
+override. New `AgentRun.status` value `"queued"` (a blocked child no longer dishonestly claims
+`"running"` while doing nothing) via a new `initial_status` param on `create_agent_run` (default
+preserves every existing call site). **A prerequisite that failed doesn't block or skip its
+dependent** — the dependent still runs, with an honest "did not complete successfully" note plus
+the real failure text injected, extending `synthesize_results`'s existing "be honest about
+failures" philosophy down into the hand-off itself rather than the orchestrator unilaterally
+deciding the dependent is unsalvageable. New tests: 10 new `_parse_subtasks` cases (a diamond
+graph matching the PRD's own diagram shape, self/dangling/cycle/truncation-invalidated rejections,
+malformed items) plus two new full-HTTP-round-trip integration tests proving real data flow, not
+just timing — one asserts a dependent child's own returned `goal` field literally contains its
+prerequisites' real completed output text, the other exercises a real failed-prerequisite hand-off
+end to end. Backend 281/281 tests (up from 273), ruff/mypy clean. CLI: new `SwarmChildOut`
+schema (`depends_on`, `original_goal` — swarm-specific, not added to the general `AgentRunOut`),
+`swarmChildStatusIcon` gained a `"queued"` icon, `SwarmTree.tsx` shows a queued child's real
+concise `original_goal` plus a real "waiting on: ..." note resolved from its real sibling ids.
+CLI 127/127 tests (up from 106), tsc clean. **Live-verified against the real Ollama-backed
+stack**: applied the real migration against the real Postgres; one real run against a genuinely
+ambiguous goal correctly hit the honest decomposition-failure path (the small local model's JSON
+didn't form a valid graph — a known, already-documented model-quality limit, not a code bug); a
+second real run against a simpler goal decomposed into 2 real independent sub-tasks
+(`depends_on: []` on both, correctly round-tripped through the new API shape end to end) and
+completed with a real synthesis. Proving the dependency-chain *happy path* live specifically
+would need a local model reliably emitting the new structured JSON shape — not attempted further
+given this project's own prior, repeated findings about small local models and structured
+multi-step output; the deterministic-provider integration tests above already prove that exact
+mechanism directly and repeatably. See `kirxil-cli-prd.md`'s §27 status note.
+
+**Phase 11 — Hermes Runtime: a real `AgentRuntime` alternative over Hermes's real HTTP+SSE API
+(done, 2026-09-03).** The earlier Hermes research spike (this file's "Hermes Agent Engine —
+research spike" entry above) concluded there was no safe integration surface — that conclusion
+was outdated, corrected after the user supplied direct links into Hermes's real source proving it
+ships a documented "Runs API" (`POST /v1/runs`, `GET /v1/runs/{id}/events` SSE, `.../approval`,
+`.../stop`). Still never imported as a Python dependency — Hermes exact-pins
+`pydantic==2.13.4`/`httpx==0.28.1`, directly incompatible with this service's own pins — so it
+runs as its own separate service, reached over that real HTTP API, matching the existing
+`sandbox-runner`/`host-runner`/`training` pattern. New `AgentRun.runtime`/`external_run_id`
+columns (migration `0018_agent_run_runtime`), a new `app/agents/hermes_client.py` (real HTTP+SSE
+client, verified endpoint shapes) and `app/agents/hermes_runtime.py` (translates Hermes's real
+events into the exact same `AgentStep` rows the native loop writes — zero CLI rendering changes).
+**The confirmed, non-negotiable requirement**: Krixil's own Permission Engine stays the single
+source of truth for every tool approval, even for a Hermes-originated run. A 3-tier policy
+(`classify_hermes_approval`) — a real match against `app/tools/risk_rules.py`'s existing
+destructive-command patterns or an opaque request (no tool name at all) auto-denies without ever
+reaching a human; every other real, inspectable request becomes a genuine
+`ToolExecution(tool_name="hermes.<tool>", risk_level="high")` row resolved through the exact same,
+unmodified `/tools/executions/{id}/approve`/`reject` endpoints every native HIGH-risk tool call
+already uses — proven end to end in tests, not just asserted. `app/tools/service.py`'s
+`approve_execution`/`reject_execution` each gained one branch (a Hermes-bridged execution has no
+local `tool.handler` to run — approving it tells Hermes `"once"` directly instead). CLI:
+`--runtime <native|hermes>` on `run`/every verb/the bare REPL, `.kirxil.yml`'s `agent.runtime`
+default, same precedence shape as `--model`/`model.default`. Tests follow this codebase's
+established "real fixture server, not a mocked SDK" discipline —
+`tests/fixtures/hermes_fixture_server.py` is a real, scriptable HTTP+SSE server implementing
+Hermes's real documented shape, exercised by `tests/test_hermes_client.py` (8 tests) and
+`tests/test_hermes_runtime.py` (6 tests, including a full approval round trip through the real
+unmodified approve endpoint). Backend 295/295 tests (up from 281), ruff/mypy clean. CLI 130/130
+(up from 106), tsc clean. **Not done, explicitly**: actually installing/running a real Hermes
+instance (the user's own call, not attempted autonomously — same "don't pipe an installer to a
+shell unread" caution as before), swarm-per-child runtime selection, ACP, the TUI-gateway JSON-RPC
+protocol. A real live-Hermes smoke test is a manual follow-up once the user has one running with a
+real `API_SERVER_KEY`. See [`hermes-runtime.md`](hermes-runtime.md) for the full design account.

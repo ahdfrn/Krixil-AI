@@ -17,6 +17,8 @@ async def create_agent_run(
     model_id: str | None = None,
     max_steps: int | None = None,
     swarm_run_id: uuid.UUID | None = None,
+    initial_status: str = "running",
+    runtime: str = "native",
 ) -> AgentRun:
     settings = get_settings()
     # min(), not a straight override — a client-requested budget can only ever be tighter than
@@ -28,8 +30,10 @@ async def create_agent_run(
         tenant_id=tenant_ctx.tenant_id,
         user_id=tenant_ctx.user_id,
         goal=goal,
-        status="running",
+        workspace_root=tenant_ctx.workspace_root,
+        status=initial_status,
         model_id=model_id,
+        runtime=runtime,
         max_steps=effective_max_steps,
         max_tool_calls=settings.agent_max_tool_calls,
         max_execution_seconds=settings.agent_max_execution_seconds,

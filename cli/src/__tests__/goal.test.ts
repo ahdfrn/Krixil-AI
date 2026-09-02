@@ -4,7 +4,8 @@ import { buildGoal, dirFromCwd } from "../goal.js";
 describe("buildGoal", () => {
   it("frames a root-level goal without a folder qualifier", () => {
     const text = buildGoal("fix the bug", ".");
-    expect(text).toContain("Using your host.list_files");
+    expect(text).toContain("Available tools: host.list_files");
+    expect(text).toContain("Greetings and general questions need no tools");
     expect(text).toContain("work in the real folder on this machine");
     expect(text.endsWith("Task: fix the bug")).toBe(true);
   });

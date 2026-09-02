@@ -19,6 +19,7 @@ class ToolExecution(UUIDPKMixin, TimestampMixin, Base):
         GUID(), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
     tool_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    workspace_root: Mapped[str | None] = mapped_column(String(1000), nullable=True)
     risk_level: Mapped[str] = mapped_column(String(20), nullable=False)
     # "pending_approval" | "running" | "completed" | "failed" | "rejected" | "blocked"
     # ("blocked" — a real, hard-coded BLOCK-tier match, app/tools/risk_rules.py — never offered

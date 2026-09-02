@@ -19,17 +19,20 @@ router = APIRouter(prefix="/mcp", tags=["mcp"])
 
 
 def _redact(server) -> MCPServerOut:
-    # Real env *keys* are useful to see at a glance (e.g. confirming GITHUB_TOKEN is set at all);
-    # real values are secrets (API tokens, etc.) that shouldn't come back over the API once set —
-    # redacted here, the real values are still what's actually used to connect (app/mcp/client.py
-    # reads them straight from the MCPServer row, not from this response).
-    redacted_env = {k: "***" for k in server.env}
+    # Real env/header *keys* are useful to see at a glance (e.g. confirming GITHUB_TOKEN or
+    # Authorization is set at all); real values are secrets (API tokens, bearer headers, etc.)
+    # that shouldn't come back over the API once set — redacted here, the real values are still
+    # what's actually used to connect (app/mcp/client.py reads them straight from the MCPServer
+    # row, not from this response).
     return MCPServerOut(
         id=server.id,
         name=server.name,
+        transport=server.transport,
         command=server.command,
         args=server.args,
-        env=redacted_env,
+        env={k: "***" for k in server.env},
+        url=server.url,
+        headers={k: "***" for k in server.headers},
         created_at=server.created_at,
     )
 
@@ -41,7 +44,15 @@ async def add_server(
     session: AsyncSession = Depends(get_session),
 ) -> MCPServerOut:
     server = await create_mcp_server(
-        session, tenant_ctx, payload.name, payload.command, payload.args, payload.env
+        session,
+        tenant_ctx,
+        payload.name,
+        payload.transport,
+        payload.command,
+        payload.args,
+        payload.env,
+        payload.url,
+        payload.headers,
     )
     await session.commit()
     return _redact(server)
@@ -73,7 +84,17 @@ async def get_server_tools(
     session: AsyncSession = Depends(get_session),
 ) -> list[MCPToolOut]:
     """A real, live connection test — connects to the real configured server right now and
-    returns whatever it actually advertises, surfacing a real, clear error if it can't."""
+    returns whatever it actually advertises, surfacing a real, clear error if it can't.
+
+    Accepted trust boundary, documented not silent: for a remote (sse/http) server, `url` is
+    tenant-supplied, so this endpoint makes the `api` container issue a real outbound HTTP request
+    to wherever that tenant pointed it (a real SSRF surface — internal ports, cloud metadata
+    endpoints, etc., are all technically reachable). This is accepted as within MCP server
+    registration's existing trust boundary: registering ANY MCP server (stdio included) already
+    lets a tenant make this container run an arbitrary local command or reach an arbitrary tool a
+    third-party server exposes — `mcp.call_tool` is already HIGH-risk/approval-gated for exactly
+    that reason. An egress allowlist for `url` would be a real, separate follow-up if this
+    deployment ever needs to isolate tenants from each other's network reach; not built here."""
     server = await get_mcp_server_or_404(session, tenant_ctx, server_id)
     try:
         tools = await list_server_tools(server)

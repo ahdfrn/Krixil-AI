@@ -1,6 +1,7 @@
 import json
 import re
 import time
+from dataclasses import replace
 from datetime import UTC, datetime
 
 from fastapi import HTTPException
@@ -91,7 +92,7 @@ def _tool_schemas() -> list[ToolSchema]:
     ]
 
 
-async def _record_step(
+async def record_agent_step(
     session: AsyncSession,
     agent_run: AgentRun,
     step_number: int,
@@ -100,6 +101,9 @@ async def _record_step(
     tool_name: str | None = None,
     content: dict,
 ) -> None:
+    """Public (not module-private) because app/agents/hermes_runtime.py reuses this verbatim to
+    translate Hermes's own SSE events into the exact same real AgentStep rows a native run
+    produces — the CLI's Transcript.tsx then renders both runtimes identically with zero changes."""
     session.add(
         AgentStep(
             tenant_id=agent_run.tenant_id,
@@ -172,6 +176,7 @@ async def run_agent(
     resolved observation, so this continues at the next step number with the message history
     rebuilt from those rows, rather than re-asking the model the original goal from nothing.
     """
+    tenant_ctx = replace(tenant_ctx, workspace_root=agent_run.workspace_root)
     max_test_retries = get_settings().agent_max_test_retries
 
     if resume:
@@ -196,7 +201,7 @@ async def run_agent(
             agent_run.status = "completed"
             agent_run.step_count = start_step
             agent_run.completed_at = datetime.now(UTC)
-            await _record_step(
+            await record_agent_step(
                 session,
                 agent_run,
                 start_step,
@@ -220,6 +225,8 @@ async def run_agent(
         start_step = 1
         test_attempts = 0
     tools = _tool_schemas()
+    if tenant_ctx.workspace_root:
+        tools = [tool for tool in tools if tool.name.startswith("host.")]
     model_kwargs = {} if model_id is None or model_id == "auto" else {"model": model_id}
     start = time.monotonic()
 
@@ -254,12 +261,16 @@ async def run_agent(
             agent_run.final_response = response.content
             agent_run.status = "completed"
             agent_run.step_count = step_number
-            await _record_step(
+            await record_agent_step(
                 session,
                 agent_run,
                 step_number,
                 "final_response",
-                content={"content": response.content},
+                content={
+                    "content": response.content,
+                    "model": response.model,
+                    "provider": response.provider or provider.name,
+                },
             )
             break
 
@@ -270,13 +281,17 @@ async def run_agent(
             agent_run.error_message = "max_tool_calls exceeded"
             break
 
-        await _record_step(
+        await record_agent_step(
             session,
             agent_run,
             step_number,
             "tool_call",
             tool_name=call.name,
-            content={"arguments": call.arguments},
+            content={
+                "arguments": call.arguments,
+                "model": response.model,
+                "provider": response.provider or provider.name,
+            },
         )
 
         try:
@@ -287,7 +302,7 @@ async def run_agent(
             # observation so the loop (or a smarter model) can react to it, same as a real
             # tool failure would.
             observation = {"error": str(exc.detail)}
-            await _record_step(
+            await record_agent_step(
                 session,
                 agent_run,
                 step_number,
@@ -306,7 +321,7 @@ async def run_agent(
             agent_run.status = "waiting_approval"
             agent_run.pending_execution_id = execution.id
             agent_run.step_count = step_number
-            await _record_step(
+            await record_agent_step(
                 session,
                 agent_run,
                 step_number,
@@ -320,7 +335,7 @@ async def run_agent(
             observation = execution.output
         else:
             observation = {"error": execution.error_message or "unknown error"}
-        await _record_step(
+        await record_agent_step(
             session, agent_run, step_number, "observation", tool_name=call.name, content=observation
         )
 
@@ -347,7 +362,7 @@ async def run_agent(
             )
             agent_run.status = "completed"
             agent_run.step_count = final_step_number
-            await _record_step(
+            await record_agent_step(
                 session,
                 agent_run,
                 final_step_number,
@@ -373,7 +388,7 @@ async def run_agent(
         status=agent_run.status,
         step_count=agent_run.step_count,
     )
-    # Terminal states reached without a final _record_step call right after them (max_steps/
+    # Terminal states reached without a final record_agent_step call right after them (max_steps/
     # max_execution_seconds exceeded) need their own commit — every other exit path already got
-    # one from _record_step's commit above, but this one doesn't add a step.
+    # one from record_agent_step's commit above, but this one doesn't add a step.
     await session.commit()

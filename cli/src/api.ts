@@ -39,6 +39,8 @@ const AgentRunSchema = z.object({
   // Set only when this run is one real child of a Multi-Agent Swarm (POST /agents/swarm) — null
   // for every ordinary run.
   swarm_run_id: z.string().nullable(),
+  // "native" | "hermes" — which AgentRuntime actually ran this (see app/agents/hermes_runtime.py).
+  runtime: z.string(),
   created_at: z.string(),
   completed_at: z.string().nullable(),
 });
@@ -66,7 +68,16 @@ const SwarmRunSchema = z.object({
 });
 export type SwarmRunOut = z.infer<typeof SwarmRunSchema>;
 
-const SwarmRunDetailSchema = SwarmRunSchema.extend({ children: z.array(AgentRunSchema) });
+const SwarmChildSchema = AgentRunSchema.extend({
+  // Real sibling AgentRun ids this child waits on (empty for an independent sub-task).
+  depends_on: z.array(z.string()),
+  // Only set for a dependent child whose `goal` got rewritten with injected prerequisite
+  // context — the original, concise sub-task text, for display.
+  original_goal: z.string().nullable(),
+});
+export type SwarmChildOut = z.infer<typeof SwarmChildSchema>;
+
+const SwarmRunDetailSchema = SwarmRunSchema.extend({ children: z.array(SwarmChildSchema) });
 export type SwarmRunDetail = z.infer<typeof SwarmRunDetailSchema>;
 
 const BrainIndexRunSchema = z.object({
@@ -92,11 +103,14 @@ export type BrainSearchResultOut = z.infer<typeof BrainSearchResultSchema>;
 const MCPServerSchema = z.object({
   id: z.string(),
   name: z.string(),
-  command: z.string(),
+  transport: z.enum(["stdio", "sse", "http"]),
+  command: z.string().nullable(),
   args: z.array(z.string()),
-  // Real values are redacted to "***" by the backend (app/mcp/router.py) — never sent back over
-  // the API once set.
+  // Real env/header values are redacted to "***" by the backend (app/mcp/router.py) — never sent
+  // back over the API once set.
   env: z.record(z.string(), z.string()),
+  url: z.string().nullable(),
+  headers: z.record(z.string(), z.string()),
   created_at: z.string(),
 });
 export type MCPServerOut = z.infer<typeof MCPServerSchema>;
@@ -143,20 +157,33 @@ export class KrixilApi {
   constructor(
     private baseUrl: string,
     accessToken: string | null = null,
+    private workspaceRoot?: string,
   ) {
     this.accessToken = accessToken;
   }
 
   private headers(): Record<string, string> {
     if (this.accessToken === null) throw new Error("Not logged in.");
-    return { Authorization: `Bearer ${this.accessToken}`, "Content-Type": "application/json" };
+    return { Authorization: `Bearer ${this.accessToken}`, "Content-Type": "application/json",
+      ...(this.workspaceRoot ? { "X-Krixil-Workspace": encodeURIComponent(this.workspaceRoot) } : {}) };
   }
 
-  async login(tenantSlug: string, email: string, password: string): Promise<{ accessToken: string; tenantSlug: string }> {
+  async selectWorkspace(root: string): Promise<string> {
+    const response = await fetch(`${this.baseUrl}/host/workspace`, {
+      headers: { ...this.headers(), "X-Krixil-Workspace": encodeURIComponent(root) },
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!response.ok) await parseError(response);
+    const workspace = z.object({ root: z.string().min(1) }).parse(await response.json());
+    this.workspaceRoot = workspace.root;
+    return workspace.root;
+  }
+
+  async login(tenantSlug: string, email: string, password: string, totpCode?: string): Promise<{ accessToken: string; tenantSlug: string }> {
     const response = await fetch(`${this.baseUrl}/auth/login`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ tenant_slug: tenantSlug, email, password }),
+      body: JSON.stringify({ tenant_slug: tenantSlug, email, password, ...(totpCode ? { totp_code: totpCode } : {}) }),
     });
     if (!response.ok) await parseError(response);
     const body = (await response.json()) as { access_token: string; tenant: { slug: string } };
@@ -176,11 +203,46 @@ export class KrixilApi {
     return z.array(AgentRunSchema).parse(await response.json());
   }
 
-  async runAgent(goal: string, model?: string, maxSteps?: number): Promise<AgentRunOut> {
+  async chat(message: string, conversationId?: string, model?: string, signal?: AbortSignal) {
+    const response = await fetch(`${this.baseUrl}/chat`, {
+      method: "POST",
+      headers: this.headers(),
+      signal,
+      body: JSON.stringify({ message, conversation_id: conversationId ?? null, model: model ?? null, allow_tools: false }),
+    });
+    if (!response.ok) await parseError(response);
+    return z.object({
+      conversation_id: z.string(),
+      message: z.object({ content: z.string() }),
+      model: z.string(),
+      provider: z.string().nullable().optional(),
+    }).parse(await response.json());
+  }
+
+  async publicChat(message: string, signal?: AbortSignal) {
+    const response = await fetch(`${this.baseUrl}/chat/public`, {
+      method: "POST", headers: this.headers(), signal,
+      body: JSON.stringify({ message, public_data_consent: true }),
+    });
+    if (!response.ok) await parseError(response);
+    return z.object({ content: z.string(), model: z.string(), provider: z.string() }).parse(await response.json());
+  }
+
+  async runAgent(
+    goal: string,
+    model?: string,
+    maxSteps?: number,
+    runtime?: "native" | "hermes",
+  ): Promise<AgentRunOut> {
     const response = await fetch(`${this.baseUrl}/agents/run`, {
       method: "POST",
       headers: this.headers(),
-      body: JSON.stringify({ goal, model: model ?? null, max_steps: maxSteps ?? null }),
+      body: JSON.stringify({
+        goal,
+        model: model ?? null,
+        max_steps: maxSteps ?? null,
+        runtime: runtime ?? "native",
+      }),
     });
     if (!response.ok) await parseError(response);
     return AgentRunSchema.parse(await response.json());
@@ -243,14 +305,14 @@ export class KrixilApi {
 
   async addMcpServer(
     name: string,
-    command: string,
-    args: string[],
-    env: Record<string, string>,
+    opts:
+      | { transport: "stdio"; command: string; args: string[]; env: Record<string, string> }
+      | { transport: "sse" | "http"; url: string; headers: Record<string, string> },
   ): Promise<MCPServerOut> {
     const response = await fetch(`${this.baseUrl}/mcp/servers`, {
       method: "POST",
       headers: this.headers(),
-      body: JSON.stringify({ name, command, args, env }),
+      body: JSON.stringify({ name, ...opts }),
     });
     if (!response.ok) await parseError(response);
     return MCPServerSchema.parse(await response.json());

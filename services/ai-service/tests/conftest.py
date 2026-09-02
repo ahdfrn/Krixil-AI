@@ -9,6 +9,8 @@ import os
 os.environ.setdefault("OTEL_ENABLED", "false")
 os.environ.setdefault("TAVILY_API_KEY", "")
 os.environ.setdefault("MODEL_PROVIDER", "mock")
+os.environ.setdefault("MODEL_FALLBACK_PROVIDERS", "")
+os.environ.setdefault("HOST_RUNNER_API_KEY", "test-only-host-key")
 
 import fakeredis.aioredis
 import pytest
@@ -87,6 +89,9 @@ async def override_dependencies(session_factory, monkeypatch):
     monkeypatch.setattr("app.agents.swarm.AsyncSessionLocal", session_factory)
     # run_brain_index_in_background (app/brain/service.py) — same reason again.
     monkeypatch.setattr("app.brain.service.AsyncSessionLocal", session_factory)
+    # run_hermes_agent_in_background/resume_hermes_agent_in_background (app/agents/
+    # hermes_runtime.py) — same reason again: their own detached sessions, one per SSE event.
+    monkeypatch.setattr("app.agents.hermes_runtime.AsyncSessionLocal", session_factory)
 
     yield
 

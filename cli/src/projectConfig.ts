@@ -16,6 +16,11 @@
  *   through host.run_command/the agent — these are commands the user themselves configured and
  *   already trusts, not agent-generated ones, so gating each on a HIGH-risk approval pause would
  *   be friction with no real safety benefit.
+ * - `agent.runtime` — "native" (default) or "hermes" (proxied to a real Hermes instance over its
+ *   own HTTP+SSE Runs API, see app/agents/hermes_runtime.py). Same precedence shape as
+ *   `model.default`: `--runtime` flag > this > "native". Rejected server-side with a clear error
+ *   if "hermes" is requested but the deployment has no HERMES_BASE_URL configured — never a
+ *   silent fallback to native.
  *
  * Deliberately NOT implemented here: `model.coding`/`model.reasoning` (routing by task type) —
  * this deployment only has two unbenchmarked local Ollama models, and picking one over the other
@@ -37,7 +42,10 @@ import { z } from "zod";
 const ProjectConfigSchema = z.object({
   project: z.object({ name: z.string().optional() }).optional(),
   model: z.object({ default: z.string().optional() }).optional(),
-  agent: z.object({ max_iterations: z.number().int().positive().optional() }).optional(),
+  agent: z.object({
+    max_iterations: z.number().int().positive().optional(),
+    runtime: z.enum(["native", "hermes"]).optional(),
+  }).optional(),
   verify: z.array(z.string().min(1)).optional(),
 });
 
@@ -72,7 +80,7 @@ export function loadProjectConfig(cwd: string = process.cwd()): ProjectConfig | 
   if (!parsed.success) {
     console.error(
       `Ignoring ${path} — doesn't match the expected shape (project.name, model.default, ` +
-        "agent.max_iterations, verify).",
+        "agent.max_iterations, agent.runtime, verify).",
     );
     return null;
   }

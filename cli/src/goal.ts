@@ -11,11 +11,14 @@ const TOOLS =
   "host.delete_file, host.run_command";
 
 export function buildGoal(instruction: string, dir: string): string {
+  const guidance = "Use tools only when needed for the user's request. Greetings and general questions need no tools. " +
+    "Do not invent file paths or use placeholder paths. Inspect existing paths before editing. " +
+    "A question is not permission to modify files. Reply in the user's language. ";
   if (dir === ".") {
-    return `Using your ${TOOLS} tools, work in the real folder on this machine. Task: ${instruction}`;
+    return `${guidance}Available tools: ${TOOLS}. When needed, work in the real folder on this machine; paths are relative to the configured host root. Task: ${instruction}`;
   }
   return (
-    `Using your ${TOOLS} tools, work within the "${dir}" folder of the real folder on this ` +
+    `${guidance}Available tools: ${TOOLS}. When needed, work within the "${dir}" folder of the real folder on this ` +
     `machine. File paths are relative to the root, so prefix paths with "${dir}/" (e.g. ` +
     `"${dir}/main.py"). host.run_command already takes a separate "directory" argument for this ` +
     `— pass "${dir}" as that argument, and do not also \`cd\` into it from within the command ` +

@@ -29,7 +29,15 @@ class SwarmRunOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class SwarmChildOut(AgentRunOut):
+    # Real sibling AgentRun ids this child waits on, and (only for a child whose goal was
+    # rewritten with injected prerequisite context) the original concise sub-task text — both
+    # swarm-specific, not added to the general AgentRunOut every other /agents/* endpoint returns.
+    depends_on: list[uuid.UUID] = []
+    original_goal: str | None = None
+
+
 class SwarmRunDetailOut(SwarmRunOut):
     # Real per-child status — each one the exact same AgentRunOut shape `GET /agents/{id}/status`
-    # returns, not a separate "swarm child" representation.
-    children: list[AgentRunOut]
+    # returns (plus depends_on), not a separate "swarm child" representation.
+    children: list[SwarmChildOut]

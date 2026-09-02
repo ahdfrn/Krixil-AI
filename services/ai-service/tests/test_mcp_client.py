@@ -17,6 +17,7 @@ _TEST_SERVER_SCRIPT = str(Path(__file__).parent / "fixtures" / "mcp_test_server.
 def _real_test_server(**overrides) -> MCPServer:
     defaults = {
         "name": "test",
+        "transport": "stdio",
         "command": sys.executable,
         "args": [_TEST_SERVER_SCRIPT],
         "env": {},

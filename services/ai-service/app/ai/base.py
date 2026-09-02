@@ -31,6 +31,7 @@ class ModelResponse:
     model: str
     usage: dict = field(default_factory=dict)
     tool_calls: list[ToolCallRequest] = field(default_factory=list)
+    provider: str | None = None
 
 
 class ModelProvider(ABC):

@@ -19,6 +19,36 @@ describe("KrixilApi", () => {
     vi.unstubAllGlobals();
   });
 
+  it("validates project selection and attaches it to subsequent requests", async () => {
+    const root = "E:\\Proyek saya\\contoh";
+    fetchMock.mockResolvedValueOnce(jsonResponse({ root }));
+    fetchMock.mockResolvedValueOnce(jsonResponse([]));
+    const api = new KrixilApi(BASE_URL, "test-token");
+    expect(await api.selectWorkspace(root)).toBe(root);
+    await api.listModels();
+    for (const [, request] of fetchMock.mock.calls) {
+      expect(request.headers["X-Krixil-Workspace"]).toBe(encodeURIComponent(root));
+    }
+  });
+
+  it("failed project validation never sets a new workspace", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ detail: "Invalid workspace" }, 400));
+    fetchMock.mockResolvedValueOnce(jsonResponse([]));
+    const api = new KrixilApi(BASE_URL, "test-token");
+    await expect(api.selectWorkspace("C:\\")).rejects.toThrow(ApiError);
+    await api.listModels();
+    expect(fetchMock.mock.calls[1]![1].headers["X-Krixil-Workspace"]).toBeUndefined();
+  });
+
+  it("sends chat context with tools disabled", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ conversation_id: "c1", message: { content: "Halo" }, model: "test" }));
+    const api = new KrixilApi(BASE_URL, "test-token");
+    await api.chat("siapa saya", "c1", "auto");
+    const [url, request] = fetchMock.mock.calls[0]!;
+    expect(url).toBe(`${BASE_URL}/chat`);
+    expect(JSON.parse(request.body)).toEqual({ message: "siapa saya", conversation_id: "c1", model: "auto", allow_tools: false });
+  });
+
   it("login stores the token and returns the tenant slug", async () => {
     fetchMock.mockResolvedValueOnce(
       jsonResponse({
@@ -54,6 +84,7 @@ describe("KrixilApi", () => {
         error_message: null,
         pending_execution_id: null,
         swarm_run_id: null,
+        runtime: "native",
         created_at: "2026-09-01T00:00:00Z",
         completed_at: null,
       }),
@@ -65,7 +96,12 @@ describe("KrixilApi", () => {
 
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect((init.headers as Record<string, string>).Authorization).toBe("Bearer tok-123");
-    expect(JSON.parse(init.body as string)).toEqual({ goal: "do the thing", model: "llama3.1:8b", max_steps: null });
+    expect(JSON.parse(init.body as string)).toEqual({
+      goal: "do the thing",
+      model: "llama3.1:8b",
+      max_steps: null,
+      runtime: "native",
+    });
   });
 
   it("runAgent forwards maxSteps when given (PRD §34's agent.max_iterations)", async () => {
@@ -82,6 +118,7 @@ describe("KrixilApi", () => {
         error_message: null,
         pending_execution_id: null,
         swarm_run_id: null,
+        runtime: "native",
         created_at: "2026-09-01T00:00:00Z",
         completed_at: null,
       }),
@@ -89,7 +126,43 @@ describe("KrixilApi", () => {
     const api = new KrixilApi(BASE_URL, "tok-123");
     await api.runAgent("do the thing", "auto", 4);
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(JSON.parse(init.body as string)).toEqual({ goal: "do the thing", model: "auto", max_steps: 4 });
+    expect(JSON.parse(init.body as string)).toEqual({
+      goal: "do the thing",
+      model: "auto",
+      max_steps: 4,
+      runtime: "native",
+    });
+  });
+
+  it("runAgent forwards runtime=\"hermes\" when explicitly requested", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        id: "run-1",
+        goal: "do the thing",
+        status: "running",
+        step_count: 0,
+        tool_call_count: 0,
+        max_steps: 8,
+        max_tool_calls: 5,
+        final_response: null,
+        error_message: null,
+        pending_execution_id: null,
+        swarm_run_id: null,
+        runtime: "hermes",
+        created_at: "2026-09-01T00:00:00Z",
+        completed_at: null,
+      }),
+    );
+    const api = new KrixilApi(BASE_URL, "tok-123");
+    const run = await api.runAgent("do the thing", "auto", undefined, "hermes");
+    expect(run.runtime).toBe("hermes");
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(init.body as string)).toEqual({
+      goal: "do the thing",
+      model: "auto",
+      max_steps: null,
+      runtime: "hermes",
+    });
   });
 
   it("getStatus returns the run's steps", async () => {
@@ -106,6 +179,7 @@ describe("KrixilApi", () => {
         error_message: null,
         pending_execution_id: null,
         swarm_run_id: null,
+        runtime: "native",
         created_at: "2026-09-01T00:00:00Z",
         completed_at: "2026-09-01T00:00:05Z",
         steps: [
@@ -292,8 +366,11 @@ describe("KrixilApi", () => {
             error_message: null,
             pending_execution_id: null,
             swarm_run_id: "swarm-1",
+            runtime: "native",
             created_at: "2026-09-02T00:00:00Z",
             completed_at: "2026-09-02T00:00:30Z",
+            depends_on: [],
+            original_goal: null,
           },
         ],
       }),
@@ -307,6 +384,47 @@ describe("KrixilApi", () => {
 
     const [url] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(url).toBe(`${BASE_URL}/agents/swarm/swarm-1/status`);
+  });
+
+  it("getSwarmStatus parses a dependent child's depends_on and original_goal", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        id: "swarm-1",
+        goal: "build and test",
+        status: "running",
+        model_id: null,
+        subtask_count: 2,
+        synthesis: null,
+        error_message: null,
+        created_at: "2026-09-02T00:00:00Z",
+        completed_at: null,
+        children: [
+          {
+            id: "child-1",
+            goal: "Context from prerequisite sub-task(s)...\n\nYour sub-task: Write tests",
+            status: "queued",
+            step_count: 0,
+            tool_call_count: 0,
+            max_steps: 8,
+            max_tool_calls: 5,
+            final_response: null,
+            error_message: null,
+            pending_execution_id: null,
+            swarm_run_id: "swarm-1",
+            runtime: "native",
+            created_at: "2026-09-02T00:00:00Z",
+            completed_at: null,
+            depends_on: ["child-0"],
+            original_goal: "Write tests",
+          },
+        ],
+      }),
+    );
+    const api = new KrixilApi(BASE_URL, "tok-123");
+    const swarm = await api.getSwarmStatus("swarm-1");
+    expect(swarm.children[0]!.status).toBe("queued");
+    expect(swarm.children[0]!.depends_on).toEqual(["child-0"]);
+    expect(swarm.children[0]!.original_goal).toBe("Write tests");
   });
 
   it("indexBrain posts the real directory and parses the started run", async () => {
@@ -375,33 +493,69 @@ describe("KrixilApi", () => {
     expect(JSON.parse(init.body as string)).toEqual({ query: "handle a request", limit: 5 });
   });
 
-  it("addMcpServer posts the real name/command/args/env", async () => {
+  it("addMcpServer posts the real name/command/args/env for stdio", async () => {
     fetchMock.mockResolvedValueOnce(
       jsonResponse({
         id: "srv-1",
         name: "fs",
+        transport: "stdio",
         command: "npx",
         args: ["-y", "@modelcontextprotocol/server-filesystem", "D:\\demo"],
         env: {},
+        url: null,
+        headers: {},
         created_at: "2026-09-02T00:00:00Z",
       }),
     );
     const api = new KrixilApi(BASE_URL, "tok-123");
-    const server = await api.addMcpServer(
-      "fs",
-      "npx",
-      ["-y", "@modelcontextprotocol/server-filesystem", "D:\\demo"],
-      {},
-    );
+    const server = await api.addMcpServer("fs", {
+      transport: "stdio",
+      command: "npx",
+      args: ["-y", "@modelcontextprotocol/server-filesystem", "D:\\demo"],
+      env: {},
+    });
     expect(server.name).toBe("fs");
 
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(url).toBe(`${BASE_URL}/mcp/servers`);
     expect(JSON.parse(init.body as string)).toEqual({
       name: "fs",
+      transport: "stdio",
       command: "npx",
       args: ["-y", "@modelcontextprotocol/server-filesystem", "D:\\demo"],
       env: {},
+    });
+  });
+
+  it("addMcpServer posts the real url/headers for a remote transport", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        id: "srv-2",
+        name: "remote",
+        transport: "sse",
+        command: null,
+        args: [],
+        env: {},
+        url: "https://example.com/sse",
+        headers: { Authorization: "***" },
+        created_at: "2026-09-02T00:00:00Z",
+      }),
+    );
+    const api = new KrixilApi(BASE_URL, "tok-123");
+    const server = await api.addMcpServer("remote", {
+      transport: "sse",
+      url: "https://example.com/sse",
+      headers: { Authorization: "Bearer secret" },
+    });
+    expect(server.transport).toBe("sse");
+    expect(server.url).toBe("https://example.com/sse");
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(init.body as string)).toEqual({
+      name: "remote",
+      transport: "sse",
+      url: "https://example.com/sse",
+      headers: { Authorization: "Bearer secret" },
     });
   });
 
@@ -411,9 +565,12 @@ describe("KrixilApi", () => {
         {
           id: "srv-1",
           name: "fs",
+          transport: "stdio",
           command: "npx",
           args: [],
           env: { API_TOKEN: "***" },
+          url: null,
+          headers: {},
           created_at: "2026-09-02T00:00:00Z",
         },
       ]),

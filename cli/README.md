@@ -26,14 +26,28 @@ npm link          # installs the real `kirxil` (and `krixil`) command globally
 `services/ai-service` (Docker) and `services/host-runner` (native — see its own README) both need
 to be running.
 
-## Log in
+## Start / log in
 
 ```powershell
-kirxil login
+cd D:\some\real\project
+kirxil
 ```
 
-Asks for the api base URL, your workspace slug, email, password, and your real `HOST_ROOT` (see
-`services/host-runner/.env`) — saves the session to `~/.krixil/credentials.json`. For
+`kirxil` uses the current terminal directory and opens the CLI immediately when the saved
+session is valid. Missing or expired sessions prompt for email and hidden password, then open
+the CLI automatically. Passwords are never saved; 2FA is prompted when required.
+On a fresh setup only, the account's workspace slug is requested (or set `KRIXIL_TENANT_SLUG`).
+The current project folder is selected automatically, including projects outside the old
+`HOST_ROOT`. No manual folder limit is required. `KRIXIL_BASE_URL` optionally changes the server.
+Selection is available to the deployment owner and validated on the local host-runner, which
+must run on the same computer as the CLI. Drive roots, home folders, and system roots are rejected.
+The selected root is persisted per agent run and tool execution, including approval/resume.
+File operations cannot traverse outside it; shell commands still run unsandboxed after approval.
+Currently project-scoped sessions support the native runtime and host tools only; Hermes,
+Swarm, and Brain indexing fail explicitly until they support the same scope.
+Network failures do not
+erase the saved session or trigger unnecessary login. `kirxil login` explicitly replaces a session.
+The session is saved to `~/.krixil/credentials.json`. For
 scripted/non-interactive use, set `KRIXIL_TENANT_SLUG`/`KRIXIL_EMAIL`/`KRIXIL_PASSWORD` instead
 (same three variables `training/client.py` already reads).
 
@@ -361,6 +375,21 @@ Only `anthropic`/`openrouter`/`groq`/`huggingface` have real, tested-against-moc
 key for any of them. Real code, unconfirmed live behavior, same honest caveat every time until
 someone supplies a real key.
 
+### AgentRuntime — native vs. Hermes
+
+Every run's AI reasoning normally happens via `services/ai-service`'s own native agent loop
+(`runtime=native`, the default). `--runtime hermes` (`kirxil run`, every verb, or the bare
+interactive REPL; `.kirxil.yml`'s `agent.runtime` sets the project default, same precedence shape
+as `--model`/`model.default`) proxies the run instead to a real, separately-run
+[Hermes](https://github.com/NousResearch/hermes-agent) instance over its own documented HTTP+SSE
+"Runs API" — Hermes is never imported into this backend as a dependency (its own exact-pinned
+`pydantic`/`httpx` genuinely conflict with this service's pins), so it runs as its own service,
+configured via `HERMES_BASE_URL`/`HERMES_API_KEY` (`services/ai-service/.env`). Requesting
+`runtime=hermes` with no `HERMES_BASE_URL` configured fails with a clear error, never a silent
+fallback to native. A Hermes-originated tool call still always resolves through this same CLI's
+real Permission Engine (below) — same approve/reject prompt, same audit log — Hermes is never a
+second, parallel approval system. See `docs/architecture/hermes-runtime.md` for the full design.
+
 ### Permission Engine (PRD §17)
 
 Reading, listing, and searching files runs immediately (LOW risk). Writing or editing a file runs
@@ -430,6 +459,51 @@ triggered manually with your own label instead of automatically before a run.
   commit kirxil itself made, never an unrelated commit already in the repo's history.
 
 ## Tests
+
+### Interactive UI shortcuts
+
+- **Tab** switches the prompt between **CHAT** and **CODE**, preserving your draft.
+  The selected mode and model are shown above the input. In CHAT, Enter sends a
+  conversation message; in CODE, Enter runs the coding agent with the typed task.
+- **/** on an empty prompt opens a two-choice menu: **Auto** and **NVIDIA**.
+  Use Up/Down and Enter to select, or Escape to cancel. Slashes within a message
+  or path are ordinary text. Use Ctrl+K for the other slash commands.
+- NVIDIA selects public, standalone chat, with consent required before every send.
+  Choosing it from CODE switches to CHAT. Switching back to CODE selects Auto;
+  NVIDIA never receives project context through this mode switch. Mode/model
+  changes are blocked while a task or approval is active.
+
+- `/public <question>`: one-shot NVIDIA Nemotron 3 Ultra (free) via OpenRouter.
+  Each request asks for confirmation. Use only non-sensitive public information:
+  NVIDIA logs usage for security and product improvement. The endpoint sends only
+  your question and a fixed system instruction, never project files, conversation
+  history, tools, RAG, or personal memories. It does not automatically detect or
+  redact secrets you paste. Responses appear locally but are not added to normal
+  chat context or saved as server conversations. Aggregate token metrics are recorded.
+  No fallback is used and the regular model chain is unchanged. OpenRouter's free
+  quota is shared with other free models. No additional NVIDIA API key is needed.
+
+In CHAT mode, plain input uses conversational chat with tool execution disabled. Follow-up
+messages reuse the server conversation ID during this CLI session. `/new` starts
+a fresh conversation; Ctrl+L only clears the visible transcript. Chat does not make
+Git checkpoints. Use `/code <task>` for tool-enabled coding, or `/plan <goal>` to
+plan first. Coding runs and chat history are separate contexts; coding does not
+automatically inherit chat history, so include the task details in `/code`.
+
+Restart the updated AI service as well as rebuilding the CLI: the backend must
+support the new `allow_tools: false` chat request field. Older services may ignore
+this field. Chat uses the configured chat provider, not the Hermes agent runtime.
+
+- `Ctrl+K`: open a searchable command palette. Use arrows to select and Enter to
+  insert the command into the prompt; selection does not execute it. Escape closes
+  the palette and preserves the existing draft.
+- `Ctrl+L`: clear finished transcripts while keeping the active run visible.
+- `Ctrl+C`: stop an active agent run, reject a pending approval, or exit when idle.
+- The banner switches to a compact layout on narrow terminals and after a task
+  starts. The footer displays starting/running/planning/verifying/approval states.
+- Unknown slash commands show a local error instead of becoming agent tasks.
+
+### Run checks
 
 ```powershell
 npm test          # vitest, fully offline — fetch is mocked, no running backend needed

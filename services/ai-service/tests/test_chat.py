@@ -1,6 +1,30 @@
 import json
+from unittest.mock import AsyncMock, patch
+
+import pytest
 
 from tests.helpers import auth_headers, register
+
+
+@pytest.mark.parametrize("endpoint", ["/api/v1/chat", "/api/v1/chat/stream"])
+async def test_chat_without_tools_never_invokes_tool_runner(client, endpoint):
+    registered = await register(client)
+    with (
+        patch("app.chat.router.run_chat_tools", new_callable=AsyncMock) as runner,
+        patch("app.chat.router.build_memory_context", new_callable=AsyncMock) as memory,
+        patch("app.chat.router.build_rag_context", new_callable=AsyncMock) as rag,
+        patch("app.chat.router.extract_and_store_memories", new_callable=AsyncMock) as extract,
+    ):
+        response = await client.post(
+            endpoint,
+            json={"message": "halo siapa saya", "allow_tools": False},
+            headers=auth_headers(registered["access_token"]),
+        )
+    assert response.status_code == 200
+    runner.assert_not_awaited()
+    memory.assert_not_awaited()
+    rag.assert_not_awaited()
+    extract.assert_not_awaited()
 
 
 async def test_chat_happy_path_persists_conversation(client):
@@ -161,9 +185,7 @@ async def test_cannot_delete_another_tenants_conversation(client):
     resp = await client.post("/api/v1/chat", json={"message": "hello"}, headers=headers_a)
     conversation_id = resp.json()["conversation_id"]
 
-    delete_resp = await client.delete(
-        f"/api/v1/conversations/{conversation_id}", headers=headers_b
-    )
+    delete_resp = await client.delete(f"/api/v1/conversations/{conversation_id}", headers=headers_b)
     assert delete_resp.status_code == 404
 
     # Still there for tenant A, untouched by tenant B's failed attempt.

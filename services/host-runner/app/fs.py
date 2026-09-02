@@ -8,6 +8,7 @@ approval step. See docs/architecture/coding-agent.md ("Real host-folder access")
 import os
 import re
 from pathlib import Path
+from app.scope import workspace_root
 
 MAX_READ_BYTES = 1_000_000
 MAX_SEARCH_RESULTS = 200
@@ -15,7 +16,14 @@ MAX_SEARCH_RESULTS = 200
 # asset, a data dump, a lockfile) — skipped rather than read in full, same spirit as
 # MAX_READ_BYTES above but scoped to search instead of erroring the whole request out.
 MAX_SEARCH_FILE_BYTES = 2_000_000
-SEARCH_IGNORED_DIR_NAMES = {"node_modules", "__pycache__", "venv", "dist", "build", ".next"}
+SEARCH_IGNORED_DIR_NAMES = {
+    "node_modules",
+    "__pycache__",
+    "venv",
+    "dist",
+    "build",
+    ".next",
+}
 # Project Brain indexing (services/ai-service/app/brain/) — a real, bounded cap on how many real
 # files one index run reads, so pointing it at a huge tree doesn't turn into an unbounded crawl.
 MAX_INDEX_FILES = 500
@@ -27,6 +35,9 @@ class HostPathError(ValueError):
 
 
 def host_root() -> Path:
+    selected = workspace_root.get()
+    if selected is not None:
+        return selected
     return Path(os.environ["HOST_ROOT"]).resolve()
 
 
@@ -46,9 +57,10 @@ def list_files(relative_dir: str = ".") -> list[dict]:
     entries = []
     for path in sorted(target.iterdir()):
         try:
+            resolve_host_path(str(path))
             is_dir = path.is_dir()
             size = path.stat().st_size if not is_dir else None
-        except OSError:
+        except (OSError, HostPathError):
             # Windows system/junction entries (e.g. "System Volume Information") can be
             # unreadable even to an admin-less process — skip rather than 500 the whole listing.
             continue
@@ -68,7 +80,9 @@ def read_file(relative_path: str) -> str:
     if not target.is_file():
         raise FileNotFoundError(relative_path)
     if target.stat().st_size > MAX_READ_BYTES:
-        raise ValueError(f"'{relative_path}' is too large to read (max {MAX_READ_BYTES} bytes)")
+        raise ValueError(
+            f"'{relative_path}' is too large to read (max {MAX_READ_BYTES} bytes)"
+        )
     return target.read_text(encoding="utf-8", errors="replace")
 
 
@@ -104,15 +118,18 @@ def search_files(pattern: str, relative_dir: str = ".") -> list[dict]:
     results: list[dict] = []
     for dirpath, dirnames, filenames in os.walk(target):
         dirnames[:] = [
-            d for d in dirnames if d not in SEARCH_IGNORED_DIR_NAMES and not d.startswith(".")
+            d
+            for d in dirnames
+            if d not in SEARCH_IGNORED_DIR_NAMES and not d.startswith(".")
         ]
         for filename in sorted(filenames):
             file_path = Path(dirpath) / filename
             try:
+                resolve_host_path(str(file_path))
                 if file_path.stat().st_size > MAX_SEARCH_FILE_BYTES:
                     continue
                 text = file_path.read_text(encoding="utf-8", errors="strict")
-            except (OSError, UnicodeDecodeError):
+            except (OSError, UnicodeDecodeError, HostPathError):
                 # Unreadable, or not valid UTF-8 text (the practical definition of "binary" used
                 # here) — skip rather than fail the whole search over one file.
                 continue
@@ -143,18 +160,24 @@ def walk_indexable_files(relative_dir: str = ".") -> list[dict]:
     results: list[dict] = []
     for dirpath, dirnames, filenames in os.walk(target):
         dirnames[:] = sorted(
-            d for d in dirnames if d not in SEARCH_IGNORED_DIR_NAMES and not d.startswith(".")
+            d
+            for d in dirnames
+            if d not in SEARCH_IGNORED_DIR_NAMES and not d.startswith(".")
         )
         for filename in sorted(filenames):
             file_path = Path(dirpath) / filename
             try:
+                resolve_host_path(str(file_path))
                 if file_path.stat().st_size > MAX_INDEX_FILE_BYTES:
                     continue
                 text = file_path.read_text(encoding="utf-8", errors="strict")
-            except (OSError, UnicodeDecodeError):
+            except (OSError, UnicodeDecodeError, HostPathError):
                 continue
             results.append(
-                {"path": str(file_path.relative_to(root)).replace("\\", "/"), "content": text}
+                {
+                    "path": str(file_path.relative_to(root)).replace("\\", "/"),
+                    "content": text,
+                }
             )
             if len(results) >= MAX_INDEX_FILES:
                 return results

@@ -15,6 +15,7 @@ from app.models.mcp_server import MCPServer
 from app.models.message import Message
 from app.models.role import Role
 from app.models.swarm_run import SwarmRun
+from app.models.swarm_task_dependency import SwarmTaskDependency
 from app.models.tenant import Tenant
 from app.models.tool_execution import ToolExecution
 from app.models.usage_record import UsageRecord
@@ -37,6 +38,7 @@ __all__ = [
     "Message",
     "Role",
     "SwarmRun",
+    "SwarmTaskDependency",
     "Tenant",
     "ToolExecution",
     "UsageRecord",

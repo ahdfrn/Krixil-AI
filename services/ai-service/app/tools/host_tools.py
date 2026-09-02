@@ -12,6 +12,7 @@ from app.core.config import get_settings
 from app.tenancy.context import TenantContext
 from app.tools.base import RiskLevel, Tool, register_tool
 from app.tools.risk_rules import find_block_reason
+from app.workspace.scope import host_headers
 
 _UNREACHABLE_MESSAGE = (
     "host-runner isn't reachable — is it running? See services/host-runner/README.md."
@@ -45,7 +46,9 @@ async def _host_list_files_handler(
 ) -> dict:
     settings = get_settings()
     try:
-        async with httpx.AsyncClient(timeout=settings.host_runner_timeout_seconds) as client:
+        async with httpx.AsyncClient(
+            timeout=settings.host_runner_timeout_seconds, headers=host_headers(tenant_ctx)
+        ) as client:
             response = await client.get(
                 f"{settings.host_runner_url}/files", params={"path": params.path}
             )
@@ -78,7 +81,9 @@ async def _host_read_file_handler(
 ) -> dict:
     settings = get_settings()
     try:
-        async with httpx.AsyncClient(timeout=settings.host_runner_timeout_seconds) as client:
+        async with httpx.AsyncClient(
+            timeout=settings.host_runner_timeout_seconds, headers=host_headers(tenant_ctx)
+        ) as client:
             response = await client.get(
                 f"{settings.host_runner_url}/files/content", params={"path": params.path}
             )
@@ -111,7 +116,9 @@ async def _host_write_file_handler(
 ) -> dict:
     settings = get_settings()
     try:
-        async with httpx.AsyncClient(timeout=settings.host_runner_timeout_seconds) as client:
+        async with httpx.AsyncClient(
+            timeout=settings.host_runner_timeout_seconds, headers=host_headers(tenant_ctx)
+        ) as client:
             response = await client.post(
                 f"{settings.host_runner_url}/files",
                 json={"path": params.path, "content": params.content},
@@ -152,7 +159,9 @@ async def _host_edit_file_handler(
 ) -> dict:
     settings = get_settings()
     try:
-        async with httpx.AsyncClient(timeout=settings.host_runner_timeout_seconds) as client:
+        async with httpx.AsyncClient(
+            timeout=settings.host_runner_timeout_seconds, headers=host_headers(tenant_ctx)
+        ) as client:
             read_response = await client.get(
                 f"{settings.host_runner_url}/files/content", params={"path": params.path}
             )
@@ -175,7 +184,9 @@ async def _host_edit_file_handler(
 
     new_content = content.replace(params.old_string, params.new_string, 1)
     try:
-        async with httpx.AsyncClient(timeout=settings.host_runner_timeout_seconds) as client:
+        async with httpx.AsyncClient(
+            timeout=settings.host_runner_timeout_seconds, headers=host_headers(tenant_ctx)
+        ) as client:
             write_response = await client.post(
                 f"{settings.host_runner_url}/files",
                 json={"path": params.path, "content": new_content},
@@ -213,7 +224,9 @@ async def _host_search_files_handler(
 ) -> dict:
     settings = get_settings()
     try:
-        async with httpx.AsyncClient(timeout=settings.host_runner_timeout_seconds) as client:
+        async with httpx.AsyncClient(
+            timeout=settings.host_runner_timeout_seconds, headers=host_headers(tenant_ctx)
+        ) as client:
             response = await client.get(
                 f"{settings.host_runner_url}/search",
                 params={"pattern": params.pattern, "path": params.path},
@@ -257,7 +270,9 @@ async def _host_run_command_handler(
     settings = get_settings()
     timeout = min(params.timeout_seconds, settings.host_runner_timeout_seconds)
     try:
-        async with httpx.AsyncClient(timeout=timeout + 10) as client:
+        async with httpx.AsyncClient(
+            timeout=timeout + 10, headers=host_headers(tenant_ctx)
+        ) as client:
             response = await client.post(
                 f"{settings.host_runner_url}/run",
                 json={
@@ -308,7 +323,9 @@ async def _host_delete_file_handler(
 ) -> dict:
     settings = get_settings()
     try:
-        async with httpx.AsyncClient(timeout=settings.host_runner_timeout_seconds) as client:
+        async with httpx.AsyncClient(
+            timeout=settings.host_runner_timeout_seconds, headers=host_headers(tenant_ctx)
+        ) as client:
             response = await client.delete(
                 f"{settings.host_runner_url}/files", params={"path": params.path}
             )

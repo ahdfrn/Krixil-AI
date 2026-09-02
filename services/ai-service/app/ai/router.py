@@ -3,6 +3,7 @@ from collections.abc import Callable
 from app.ai.anthropic_provider import AnthropicModelProvider
 from app.ai.base import ModelProvider
 from app.ai.cloud_provider import CloudModelProvider
+from app.ai.fallback import FallbackProvider
 from app.ai.mock_provider import MockProvider
 from app.core.config import get_settings
 
@@ -41,8 +42,7 @@ _PROVIDER_FACTORIES: dict[str, Callable[[], ModelProvider]] = {
         max_tokens=get_settings().anthropic_max_tokens,
         embeddings_provider=_ollama_provider(),
     ),
-    # OpenRouter and Groq are both genuinely OpenAI-compatible for chat *and* embeddings (see
-    # config.py's comments) — no embeddings_provider override needed, unlike anthropic/huggingface.
+    # OpenRouter supports its own embedding endpoint. Groq chat uses local Ollama embeddings.
     "openrouter": lambda: CloudModelProvider(
         name="openrouter",
         base_url=get_settings().openrouter_base_url,
@@ -55,7 +55,8 @@ _PROVIDER_FACTORIES: dict[str, Callable[[], ModelProvider]] = {
         base_url=get_settings().groq_base_url,
         api_key=get_settings().groq_api_key,
         model=get_settings().groq_model,
-        embedding_model=get_settings().groq_embedding_model,
+        embedding_model="",
+        embeddings_provider=_ollama_provider(),
     ),
     # Hugging Face's router is chat-only (OpenAI-compatible) — real embeddings delegated to
     # Ollama, same reasoning and same pattern as "anthropic" above.
@@ -70,6 +71,7 @@ _PROVIDER_FACTORIES: dict[str, Callable[[], ModelProvider]] = {
 }
 
 _instances: dict[str, ModelProvider] = {}
+_fallback_instances: dict[tuple, FallbackProvider] = {}
 
 
 class ModelRouter:
@@ -79,7 +81,34 @@ class ModelRouter:
 
     def get_provider(self) -> ModelProvider:
         settings = get_settings()
-        name = settings.model_provider
+        names = list(
+            dict.fromkeys(
+                [
+                    settings.model_provider,
+                    *[
+                        name.strip()
+                        for name in settings.model_fallback_providers.split(",")
+                        if name.strip()
+                    ],
+                ]
+            )
+        )
+        providers = [self._get_named_provider(name) for name in names]
+        if len(providers) == 1:
+            return providers[0]
+        if "mock" in names:
+            raise ValueError("Mock provider cannot participate in a real fallback chain")
+        cooldown = settings.model_fallback_cooldown_seconds
+        quota_cooldown = settings.model_fallback_quota_cooldown_seconds
+        if cooldown <= 0 or quota_cooldown <= 0:
+            raise ValueError("Fallback cooldowns must be positive")
+        key = (*[id(provider) for provider in providers], cooldown, quota_cooldown)
+        if key not in _fallback_instances:
+            _fallback_instances[key] = FallbackProvider(providers, cooldown, quota_cooldown)
+        return _fallback_instances[key]
+
+    def _get_named_provider(self, name: str) -> ModelProvider:
+        settings = get_settings()
 
         if name not in _PROVIDER_FACTORIES:
             available = ", ".join(sorted(_PROVIDER_FACTORIES))
@@ -112,3 +141,4 @@ async def aclose_providers() -> None:
         if aclose is not None:
             await aclose()
     _instances.clear()
+    _fallback_instances.clear()

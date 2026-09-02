@@ -35,6 +35,10 @@ class Settings(BaseSettings):
     minio_bucket: str = "krixil-documents"
 
     model_provider: str = "mock"
+    # Explicit, ordered consent to use these additional providers. Empty disables fallback.
+    model_fallback_providers: str = ""
+    model_fallback_cooldown_seconds: int = 60
+    model_fallback_quota_cooldown_seconds: int = 3600
     openai_api_key: str = ""
     # OpenAI-compatible: works against api.openai.com or any compatible endpoint (self-hosted
     # vLLM, OpenRouter, etc.) by overriding base_url — the provider code has no vendor-specific
@@ -73,14 +77,12 @@ class Settings(BaseSettings):
     openrouter_model: str = "openai/gpt-4o-mini"
     openrouter_embedding_model: str = "openai/text-embedding-3-small"
 
-    # Groq's API is also OpenAI-compatible for both chat and embeddings (their own
-    # console.groq.com/docs/api-reference documents both under the same shape) — same
-    # CloudModelProvider class again. Defaults here are real, current model ids as of this
-    # writing, not guarantees — Groq's hosted-model lineup changes; override via env if a default
-    # goes stale.
+    # Groq supplies chat/tool calling. Embeddings are delegated to Ollama so switching
+    # chat providers does not change this deployment's existing local vector space.
     groq_api_key: str = ""
     groq_base_url: str = "https://api.groq.com/openai/v1"
     groq_model: str = "llama-3.3-70b-versatile"
+    # Legacy setting; use OLLAMA_EMBEDDING_MODEL instead.
     groq_embedding_model: str = "nomic-embed-text-v1_5"
 
     # Hugging Face's router (router.huggingface.co/v1) is OpenAI-compatible for chat completions
@@ -170,11 +172,23 @@ class Settings(BaseSettings):
     # pattern already used to reach the natively-installed Ollama.
     host_runner_url: str = "http://host.docker.internal:8002"
     host_runner_timeout_seconds: int = 60
+    host_runner_api_key: str = ""
 
     # MCP Hub (KIRXIL AI Stack v2 Phase 6, app/mcp/). A real, bounded timeout on connecting to and
     # calling a tenant-configured MCP server (stdio subprocess) — an unresponsive third-party
     # server shouldn't be able to hang an agent run indefinitely.
     mcp_timeout_seconds: int = 30
+
+    # Hermes Agent Engine runtime (KIRXIL AI Stack v2, app/agents/hermes_client.py) — an alternate
+    # AgentRuntime reached over Hermes's own real HTTP+SSE "Runs API", never imported as a Python
+    # dependency (Hermes exact-pins pydantic/httpx versions that directly conflict with this
+    # service's own pins). Empty base_url means "not configured" — POST /agents/run with
+    # runtime="hermes" fails with a clear error rather than silently falling back to native. Same
+    # in-network-compose-service pattern as sandbox_runner_url; port 8642 is Hermes's own
+    # documented API_SERVER_PORT default.
+    hermes_base_url: str = ""
+    hermes_api_key: str = ""
+    hermes_timeout_seconds: float = 60.0
 
     @property
     def sqlalchemy_database_url(self) -> str:

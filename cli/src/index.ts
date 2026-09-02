@@ -20,13 +20,14 @@ import React from "react";
 import { execa } from "execa";
 import { ApiError, KrixilApi, type ModelInfo } from "./api.js";
 import { diffStatSinceCheckpoint, findLastCheckpoint, isGitRepo, manualCheckpoint, resetToBeforeCheckpoint } from "./checkpoint.js";
-import { clearSession, envLogin, loadSession, saveSession } from "./config.js";
+import { clearSession, envLogin, loadSession } from "./config.js";
 import { dirFromCwd } from "./goal.js";
 import { isOnPath } from "./platform.js";
 import { findConfigFile, loadProjectConfig } from "./projectConfig.js";
 import { confirm, prompt } from "./prompt.js";
 import { swarmChildStatusIcon } from "./render.js";
 import { App } from "./ui/App.js";
+import { interactiveClient } from "./startup.js";
 import { SwarmTree } from "./ui/SwarmTree.js";
 import { buildVerbInstruction, VERBS } from "./verbs.js";
 import { printVerifyResult, runVerifyPipeline } from "./verify.js";
@@ -36,7 +37,7 @@ const NOT_LOGGED_IN = "Not logged in. Run `kirxil login` first, or set KRIXIL_TE
 
 function resolveClient(): { api: KrixilApi; hostRoot: string } | null {
   const session = loadSession();
-  if (session) return { api: new KrixilApi(session.baseUrl, session.accessToken), hostRoot: session.hostRoot };
+  if (session) return { api: new KrixilApi(session.baseUrl, session.accessToken, process.cwd()), hostRoot: process.cwd() };
   return null;
 }
 
@@ -45,16 +46,14 @@ async function resolveClientOrEnv(): Promise<{ api: KrixilApi; hostRoot: string 
   if (stored) return stored;
   const env = envLogin();
   if (!env) return null;
-  const api = new KrixilApi(DEFAULT_BASE_URL);
+  const api = new KrixilApi(DEFAULT_BASE_URL, null, process.cwd());
   try {
     await api.login(env.tenantSlug, env.email, env.password);
   } catch (err) {
     console.error(err instanceof ApiError ? `Login failed: ${err.detail}` : "Login failed.");
     process.exit(1);
   }
-  // No interactive login happened to ask for a real HOST_ROOT — D:\ is this project's own real
-  // default (services/host-runner/.env.example), overridable by running `kirxil login` instead.
-  return { api, hostRoot: "D:\\" };
+  return { api, hostRoot: process.cwd() };
 }
 
 /** Same "resolve or bail with the same message" shape `models`/`run`/every verb already used
@@ -78,6 +77,7 @@ async function runInstruction(
   dirOverride: string | undefined,
   modelOverride: string | undefined,
   runVerifyAfter = false,
+  runtimeOverride?: "native" | "hermes",
 ): Promise<void> {
   const client = await resolveClientOrEnv();
   if (!client) {
@@ -87,6 +87,7 @@ async function runInstruction(
   const projectConfig = loadProjectConfig();
   const model = modelOverride ?? projectConfig?.model?.default ?? "auto";
   const maxSteps = projectConfig?.agent?.max_iterations;
+  const runtime = runtimeOverride ?? projectConfig?.agent?.runtime ?? "native";
   const { runGoalOnce } = await import("./runOnce.js");
   await runGoalOnce(
     client.api,
@@ -96,13 +97,19 @@ async function runInstruction(
     maxSteps,
     undefined,
     runVerifyAfter,
+    runtime,
   );
 }
 
 /** `kirxil plan <goal>` specifically — same pipeline as runInstruction, but keeps the raw goal
  * around (not just the verb-wrapped instruction) so a completed plan can offer a real
  * `kirxil build` handoff with that same goal (see runOnce.ts's PlanHandoff). */
-async function runPlanInstruction(rawGoal: string, dirOverride: string | undefined, modelOverride: string | undefined): Promise<void> {
+async function runPlanInstruction(
+  rawGoal: string,
+  dirOverride: string | undefined,
+  modelOverride: string | undefined,
+  runtimeOverride?: "native" | "hermes",
+): Promise<void> {
   const client = await resolveClientOrEnv();
   if (!client) {
     console.error(NOT_LOGGED_IN);
@@ -111,33 +118,35 @@ async function runPlanInstruction(rawGoal: string, dirOverride: string | undefin
   const projectConfig = loadProjectConfig();
   const model = modelOverride ?? projectConfig?.model?.default ?? "auto";
   const maxSteps = projectConfig?.agent?.max_iterations;
+  const runtime = runtimeOverride ?? projectConfig?.agent?.runtime ?? "native";
   const instruction = buildVerbInstruction("plan", rawGoal);
   const { runGoalOnce } = await import("./runOnce.js");
-  await runGoalOnce(client.api, instruction, dirOverride ?? dirFromCwd(client.hostRoot), model, maxSteps, { rawGoal });
+  await runGoalOnce(
+    client.api,
+    instruction,
+    dirOverride ?? dirFromCwd(client.hostRoot),
+    model,
+    maxSteps,
+    { rawGoal },
+    undefined,
+    runtime,
+  );
 }
 
 const program = new Command();
-program.name("kirxil").description("Kirxil AI — an autonomous software engineering agent in your terminal.");
+program
+  .name("kirxil")
+  .description("Kirxil AI — an autonomous software engineering agent in your terminal.")
+  .option("--runtime <native|hermes>", "Which AgentRuntime the interactive REPL starts on. Defaults to .kirxil.yml's agent.runtime, else \"native\".");
 
 program
   .command("login")
   .description("Log in once and remember the session in ~/.krixil/credentials.json.")
-  .option("--base-url <url>", "Krixil api service base URL.", DEFAULT_BASE_URL)
-  .action(async (opts: { baseUrl: string }) => {
-    const tenantSlug = await prompt("Workspace slug: ");
-    const email = await prompt("Email: ");
-    const password = await prompt("Password: ", true);
-    const hostRoot = await prompt("HOST_ROOT (see services/host-runner/.env, e.g. D:\\): ");
-
-    const api = new KrixilApi(opts.baseUrl);
-    try {
-      const result = await api.login(tenantSlug, email, password);
-      saveSession({ baseUrl: opts.baseUrl, tenantSlug: result.tenantSlug, accessToken: result.accessToken, hostRoot });
-      console.log(`Logged in as ${result.tenantSlug}. Session saved to ~/.krixil/credentials.json.`);
-    } catch (err) {
-      console.error(err instanceof ApiError ? `Login failed: ${err.detail}` : "Login failed.");
-      process.exit(1);
-    }
+  .option("--base-url <url>", "Krixil api service base URL.")
+  .action(async (opts: { baseUrl?: string }) => {
+    if (!process.stdin.isTTY) throw new Error("Login memerlukan terminal interaktif.");
+    await interactiveClient(true, opts.baseUrl);
+    console.log("Login berhasil. Jalankan kirxil untuk membuka CLI.");
   });
 
 program
@@ -237,7 +246,7 @@ program
       for (const child of swarm.children) {
         if (printedStatus.get(child.id) !== child.status) {
           printedStatus.set(child.id, child.status);
-          console.log(`${swarmChildStatusIcon(child.status)} ${child.goal} — ${child.status}`);
+          console.log(`${swarmChildStatusIcon(child.status)} ${child.original_goal ?? child.goal} — ${child.status}`);
         }
       }
       if (swarm.status !== "running") {
@@ -335,35 +344,64 @@ brainCmd
     }
   });
 
+function parseKeyValuePairs(pairs: string[], flagName: string): Record<string, string> | null {
+  const result: Record<string, string> = {};
+  for (const pair of pairs) {
+    const eq = pair.indexOf("=");
+    if (eq === -1) {
+      console.error(`Invalid ${flagName} value '${pair}' — expected KEY=VALUE.`);
+      return null;
+    }
+    result[pair.slice(0, eq)] = pair.slice(eq + 1);
+  }
+  return result;
+}
+
 const mcpCmd = program
   .command("mcp")
   .description(
-    "PRD §10 MCP Hub — real, tenant-configured MCP (Model Context Protocol) servers (stdio " +
-      "transport). `kirxil mcp add` configures one; the agent reaches it through the real " +
+    "PRD §10 MCP Hub — real, tenant-configured MCP (Model Context Protocol) servers (stdio, sse, " +
+      "or http transport). `kirxil mcp add` configures one; the agent reaches it through the real " +
       "mcp.list_tools/mcp.call_tool tools (HIGH risk, approval-gated, same as host.run_command).",
   );
 
 mcpCmd
-  .command("add <name> <command> [args...]")
+  .command("add <name> [command] [args...]")
   .description(
-    "Add a real MCP server, e.g. `kirxil mcp add fs npx -- -y @modelcontextprotocol/server-filesystem D:\\some\\path`.",
+    "Add a real MCP server. Stdio (default): `kirxil mcp add fs npx -- -y @modelcontextprotocol/server-filesystem D:\\some\\path`. " +
+      "Remote: `kirxil mcp add remote --transport sse --url https://example.com/sse`.",
   )
-  .option("--env <key=value>", "Environment variable to pass to the server (repeatable).", (val: string, prev: string[]) => [...prev, val], [] as string[])
-  .action(async (name: string, command: string, args: string[], opts: { env: string[] }) => {
+  .option("--transport <type>", 'Transport: "stdio" (default), "sse", or "http".', "stdio")
+  .option("--url <url>", "MCP server URL (required for --transport sse/http).")
+  .option("--env <key=value>", "Environment variable to pass to the server (repeatable, stdio only).", (val: string, prev: string[]) => [...prev, val], [] as string[])
+  .option("--header <key=value>", "HTTP header to send (repeatable, sse/http only).", (val: string, prev: string[]) => [...prev, val], [] as string[])
+  .action(async (name: string, command: string | undefined, args: string[], opts: { transport: string; url?: string; env: string[]; header: string[] }) => {
     const api = await requireApi();
-    const env: Record<string, string> = {};
-    for (const pair of opts.env) {
-      const eq = pair.indexOf("=");
-      if (eq === -1) {
-        console.error(`Invalid --env value '${pair}' — expected KEY=VALUE.`);
+    try {
+      let server;
+      if (opts.transport === "stdio") {
+        const env = parseKeyValuePairs(opts.env, "--env");
+        if (env === null || !command) {
+          if (!command) console.error("A command is required for --transport stdio.");
+          process.exitCode = 1;
+          return;
+        }
+        server = await api.addMcpServer(name, { transport: "stdio", command, args, env });
+      } else if (opts.transport === "sse" || opts.transport === "http") {
+        const headers = parseKeyValuePairs(opts.header, "--header");
+        if (headers === null || !opts.url) {
+          if (!opts.url) console.error(`A --url is required for --transport ${opts.transport}.`);
+          process.exitCode = 1;
+          return;
+        }
+        server = await api.addMcpServer(name, { transport: opts.transport, url: opts.url, headers });
+      } else {
+        console.error(`Unknown --transport '${opts.transport}' — expected stdio, sse, or http.`);
         process.exitCode = 1;
         return;
       }
-      env[pair.slice(0, eq)] = pair.slice(eq + 1);
-    }
-    try {
-      const server = await api.addMcpServer(name, command, args, env);
-      console.log(`Added '${server.name}' (${server.command} ${server.args.join(" ")}).`);
+      const desc = server.transport === "stdio" ? `${server.command} ${server.args.join(" ")}` : server.url;
+      console.log(`Added '${server.name}' (${server.transport}: ${desc}).`);
     } catch (err) {
       console.error(err instanceof ApiError ? err.detail : "Couldn't add that server.");
       process.exitCode = 1;
@@ -382,8 +420,13 @@ mcpCmd
         return;
       }
       for (const s of servers) {
-        const envPart = Object.keys(s.env).length > 0 ? ` env: ${Object.keys(s.env).join(", ")}` : "";
-        console.log(`${s.name}  ${s.command} ${s.args.join(" ")}${envPart}`);
+        if (s.transport === "stdio") {
+          const envPart = Object.keys(s.env).length > 0 ? ` env: ${Object.keys(s.env).join(", ")}` : "";
+          console.log(`${s.name}  [stdio] ${s.command} ${s.args.join(" ")}${envPart}`);
+        } else {
+          const headerPart = Object.keys(s.headers).length > 0 ? ` headers: ${Object.keys(s.headers).join(", ")}` : "";
+          console.log(`${s.name}  [${s.transport}] ${s.url}${headerPart}`);
+        }
       }
     } catch (err) {
       console.error(err instanceof ApiError ? err.detail : "Couldn't list servers.");
@@ -442,8 +485,9 @@ program
   .description("Run one goal and exit — for scripting, not the interactive feel of plain `kirxil`.")
   .option("--model <id>", "Model id from `kirxil models`, or \"auto\". Defaults to .kirxil.yml's model.default, else \"auto\".")
   .option("--dir <dir>", "Folder to work in, relative to HOST_ROOT (defaults to wherever this is launched from).")
-  .action(async (goal: string, opts: { model?: string; dir?: string }) => {
-    await runInstruction(goal, opts.dir, opts.model);
+  .option("--runtime <native|hermes>", "Which AgentRuntime executes this run. Defaults to .kirxil.yml's agent.runtime, else \"native\".")
+  .action(async (goal: string, opts: { model?: string; dir?: string; runtime?: "native" | "hermes" }) => {
+    await runInstruction(goal, opts.dir, opts.model, false, opts.runtime);
   });
 
 // PRD §33's command surface (ask/explain/analyze/generate/refactor/debug/test/review) — each one
@@ -456,17 +500,18 @@ for (const verb of VERBS) {
     .description(verb.description)
     .option("--model <id>", "Model id from `kirxil models`, or \"auto\". Defaults to .kirxil.yml's model.default, else \"auto\".")
     .option("--dir <dir>", "Folder to work in, relative to HOST_ROOT (defaults to wherever this is launched from).")
-    .action(async (argument: string | undefined, opts: { model?: string; dir?: string }) => {
+    .option("--runtime <native|hermes>", "Which AgentRuntime executes this run. Defaults to .kirxil.yml's agent.runtime, else \"native\".")
+    .action(async (argument: string | undefined, opts: { model?: string; dir?: string; runtime?: "native" | "hermes" }) => {
       // `plan` alone gets the bordered PLAN panel + real "run kirxil build with this goal now?"
       // handoff (runOnce.ts's PlanHandoff) — every other verb uses the plain shared pipeline.
       if (verb.name === "plan") {
-        await runPlanInstruction(argument ?? "", opts.dir, opts.model);
+        await runPlanInstruction(argument ?? "", opts.dir, opts.model, opts.runtime);
         return;
       }
       const instruction = buildVerbInstruction(verb.name, argument ?? "");
       // `build` alone auto-runs .kirxil.yml's real `verify:` pipeline afterward (verify.ts) — a
       // real, deterministic check instead of trusting the model's own "Review" phase narration.
-      await runInstruction(instruction, opts.dir, opts.model, verb.name === "build");
+      await runInstruction(instruction, opts.dir, opts.model, verb.name === "build", opts.runtime);
     });
 }
 
@@ -810,19 +855,18 @@ program.action(async () => {
     );
     process.exit(1);
   }
-  const client = await resolveClientOrEnv();
-  if (!client) {
-    console.error(NOT_LOGGED_IN);
-    process.exit(1);
-  }
-  const initialDir = dirFromCwd(client.hostRoot);
+  const client = await interactiveClient();
+  client.hostRoot = await client.api.selectWorkspace(process.cwd());
+  const initialDir = ".";
   const projectConfig = loadProjectConfig();
+  const rootOpts = program.opts<{ runtime?: "native" | "hermes" }>();
   render(
     React.createElement(App, {
       api: client.api,
       hostRoot: client.hostRoot,
       initialDir,
       initialModel: projectConfig?.model?.default,
+      initialRuntime: rootOpts.runtime ?? projectConfig?.agent?.runtime,
       maxSteps: projectConfig?.agent?.max_iterations,
       projectName: projectConfig?.project?.name,
     }),
@@ -830,4 +874,9 @@ program.action(async () => {
   );
 });
 
-program.parseAsync(process.argv);
+program.parseAsync(process.argv).catch((error: unknown) => {
+  console.error(error instanceof ApiError ? `API (${error.status}): ${error.detail}` :
+    error instanceof Error && !(error instanceof TypeError) ? error.message :
+    "Tidak dapat terhubung ke backend KIRXIL. Pastikan layanan API berjalan.");
+  process.exitCode = 1;
+});

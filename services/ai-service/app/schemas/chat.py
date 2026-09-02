@@ -8,6 +8,8 @@ class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=8000)
     conversation_id: uuid.UUID | None = None
     model: str | None = None
+    # Conversational clients can disable tool execution independently of model behavior.
+    allow_tools: bool = True
 
 
 class MessageOut(BaseModel):
@@ -35,6 +37,7 @@ class ChatResponse(BaseModel):
     conversation_id: uuid.UUID
     message: MessageOut
     model: str
+    provider: str | None = None
     citations: list[CitationOut] = []
     tool_calls: list[ToolCallOut] = []
 

@@ -13,12 +13,22 @@ async def create_mcp_server(
     session: AsyncSession,
     tenant_ctx: TenantContext,
     name: str,
-    command: str,
+    transport: str,
+    command: str | None,
     args: list[str],
     env: dict[str, str],
+    url: str | None,
+    headers: dict[str, str],
 ) -> MCPServer:
     server = MCPServer(
-        tenant_id=tenant_ctx.tenant_id, name=name, command=command, args=args, env=env
+        tenant_id=tenant_ctx.tenant_id,
+        name=name,
+        transport=transport,
+        command=command,
+        args=args,
+        env=env,
+        url=url,
+        headers=headers,
     )
     session.add(server)
     try:

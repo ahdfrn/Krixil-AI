@@ -12,6 +12,16 @@ access") for the full reasoning behind this trade-off.
 
 ## Setup
 
+All file and command endpoints require `X-Krixil-Host-Key`. Configure the same random
+`HOST_RUNNER_API_KEY` in this service and ai-service; missing keys fail closed. The API's
+human file endpoints also require login and host permissions. Keep the runner loopback-only.
+
+The CLI selects its current directory through an authenticated workspace header. Each request
+uses its own resolved root, without changing global `HOST_ROOT` or another terminal's session.
+`HOST_ROOT` remains only for legacy clients without a selected project. Traversal and links
+outside the selected project are rejected by filesystem operations. This is not an OS sandbox:
+an approved shell command can still access files elsewhere with the user's Windows permissions.
+
 ```powershell
 cd services/host-runner
 python -m venv .venv
@@ -28,7 +38,7 @@ Copy-Item .env.example .env
 .venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8002
 ```
 
-`--host 127.0.0.1` is not optional — this service has no authentication of its own, so it must
+`--host 127.0.0.1` is not optional — even with shared-key authentication, this service must
 never bind to `0.0.0.0` or be reachable from outside this machine.
 
 Leave it running in a terminal while using the Code page's "This Computer" mode in the web app;

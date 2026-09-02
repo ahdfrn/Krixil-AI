@@ -1,3 +1,5 @@
+from unittest.mock import AsyncMock
+
 import pytest
 
 import app.ai.router as router_module
@@ -6,6 +8,21 @@ from app.ai.catalog import get_model_catalog
 from app.ai.cloud_provider import CloudModelProvider
 from app.ai.router import ModelRouter
 from app.core.config import Settings
+
+
+async def test_groq_delegates_embeddings_to_ollama(monkeypatch):
+    settings = Settings(model_provider="groq", groq_api_key="test-key", model_fallback_providers="")
+    monkeypatch.setattr(router_module, "get_settings", lambda: settings)
+    local = AsyncMock()
+    local.embeddings.return_value = [[0.1, 0.2]]
+    monkeypatch.setattr(router_module, "_ollama_provider", lambda: local)
+    monkeypatch.setattr(router_module, "_instances", {})
+    try:
+        provider = ModelRouter().get_provider()
+        assert await provider.embeddings(["test"]) == [[0.1, 0.2]]
+        local.embeddings.assert_awaited_once_with(["test"])
+    finally:
+        await router_module.aclose_providers()
 
 
 def test_anthropic_provider_requires_api_key(monkeypatch):

@@ -1,7 +1,7 @@
 import React, { useCallback, useRef, useState } from "react";
 import { Box, Text, useApp, useInput } from "ink";
 import TextInput from "ink-text-input";
-import { ApiError, KrixilApi, type AgentRun, type ModelInfo } from "../api.js";
+import { ApiError, KrixilApi, type AgentRun } from "../api.js";
 import { autoCheckpoint, diffStatSinceCheckpoint, findLastCheckpoint, resetToBeforeCheckpoint } from "../checkpoint.js";
 import { buildGoal } from "../goal.js";
 import { loadProjectConfig } from "../projectConfig.js";
@@ -9,7 +9,9 @@ import { describeApprovalPrompt, testAttemptOutcomes } from "../render.js";
 import { buildVerbInstruction } from "../verbs.js";
 import { formatVerifyResultLines, runVerifyPipeline } from "../verify.js";
 import { Banner } from "./Banner.js";
+import { CommandPalette } from "./CommandPalette.js";
 import { PlanPanel } from "./PlanPanel.js";
+import { ModelPicker, type ModelChoice } from "./ModelPicker.js";
 import { StatusBar } from "./StatusBar.js";
 import { RunSummary, Transcript } from "./Transcript.js";
 
@@ -44,22 +46,34 @@ export function App({
   hostRoot,
   initialDir,
   initialModel,
+  initialRuntime,
   maxSteps,
   projectName,
 }: {
   api: KrixilApi;
   hostRoot: string;
   initialDir: string;
-  // .kirxil.yml's model.default/agent.max_iterations/project.name (PRD §34, cli/src/
-  // projectConfig.ts) — resolved once in index.ts before this renders, not re-read per goal.
+  // .kirxil.yml's model.default/agent.max_iterations/agent.runtime/project.name (PRD §34,
+  // cli/src/projectConfig.ts) — resolved once in index.ts before this renders, not re-read per
+  // goal.
   initialModel?: string;
+  initialRuntime?: "native" | "hermes";
   maxSteps?: number;
   projectName?: string;
 }) {
   const { exit } = useApp();
   const [dir] = useState(initialDir);
   const [model, setModel] = useState(initialModel ?? "auto");
+  const [mode, setMode] = useState<"chat" | "code">("chat");
+  const [modelPickerOpen, setModelPickerOpen] = useState(false);
+  const [runtime] = useState<"native" | "hermes">(initialRuntime ?? "native");
   const [input, setInput] = useState("");
+  const [chats, setChats] = useState<{ question: string; answer: string }[]>([]);
+  const conversationRef = useRef<string | undefined>(undefined);
+  const chatAbortRef = useRef<AbortController | null>(null);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [activity, setActivity] = useState<string | null>(null);
+  const busyRef = useRef(false);
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [notice, setNotice] = useState<string | null>(null);
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
@@ -85,6 +99,17 @@ export function App({
   }, []);
 
   useInput((char, key) => {
+    if (key.ctrl && char === "c") {
+      if (modelPickerOpen) { setModelPickerOpen(false); return; }
+      if (chatAbortRef.current) { chatAbortRef.current.abort(); return; }
+      if (confirmResolveRef.current) resolveConfirm(false);
+      if (activeRunIdRef.current) {
+        void api.cancel(activeRunIdRef.current).catch(() => setNotice("Couldn't stop the run. Try again."));
+      } else if (!busyRef.current) {
+        exit();
+      }
+      return;
+    }
     // A CRITICAL-risk pause takes real typed text ("CONFIRM") via the TextInput below instead of
     // a single y/n keypress — this handler must get out of its way rather than swallowing the
     // 'y'/'n'/'c'/etc. characters that are part of the word "CONFIRM" itself.
@@ -101,25 +126,34 @@ export function App({
       resolveConfirm(false);
       return;
     }
-    if (key.ctrl && char === "c") {
-      if (activeRunIdRef.current) {
-        void api.cancel(activeRunIdRef.current);
-      } else {
-        exit();
-        process.exit(0);
-      }
-      return;
-    }
     // Everything below only makes sense against the plain goal prompt, not while a typed-CONFIRM
     // dialog (its own separate typedConfirmValue state) is open — the branches above already
     // return for every other confirm shape, but a CRITICAL typed-confirm falls through here for
     // any key except Escape, so this needs its own explicit guard.
     if (pendingConfirm) return;
+    if (modelPickerOpen) return;
+    if (key.ctrl && char === "k") {
+      setPaletteOpen((open) => !open);
+      return;
+    }
+    if (paletteOpen) return;
+    if (key.tab) {
+      if (busyRef.current) { setNotice("Wait for the active task before switching mode."); return; }
+      const nextMode = mode === "chat" ? "code" : "chat";
+      setMode(nextMode);
+      if (nextMode === "code" && model === "nvidia") {
+        setModel("auto");
+        setNotice("Code uses Auto. NVIDIA is limited to public chat without project access.");
+      }
+      return;
+    }
     // Clears the visible run history the same way a real terminal's Ctrl+L/`clear` does — Ink
     // appends to normal scrollback rather than taking over an alt-screen, so this can't erase what
     // your terminal already printed, only what this app renders going forward.
     if (key.ctrl && char === "l") {
-      setHistory([]);
+      setHistory((entries) => entries.filter((entry) => entry.run.id === activeRunIdRef.current));
+      setNotice(null);
+      if (!chatAbortRef.current) setChats([]);
       return;
     }
     if (key.upArrow) {
@@ -218,44 +252,60 @@ export function App({
   // not a new planning engine.
   const runGoal = useCallback(
     async (rawGoal: string, verb?: "plan" | "build") => {
-      setNotice(null);
-      const instruction = verb ? buildVerbInstruction(verb, rawGoal) : rawGoal;
-      const goalText = buildGoal(instruction, dir);
-      const checkpointHash = await autoCheckpoint(process.cwd(), rawGoal);
-      if (checkpointHash) setNotice(`Checkpointed ${checkpointHash} — \`kirxil undo\` (from a shell) can revert to this.`);
-      let started;
+      if (busyRef.current) return;
+      busyRef.current = true;
+      if (model === "nvidia") setModel("auto");
+      setActivity("Starting run…");
+      setElapsed(0);
+      let buildNext = false;
       try {
-        started = await api.runAgent(goalText, model, maxSteps);
-      } catch (err) {
-        setNotice(err instanceof ApiError ? `Couldn't start that run: ${err.detail}` : "Couldn't start that run.");
-        return;
-      }
-      const key = started.id;
-      activeRunIdRef.current = started.id;
-      setActiveRunId(started.id);
-      setHistory((prev) => [...prev, { key, goal: rawGoal, run: { ...started, steps: [] }, isPlan: verb === "plan" }]);
-      const finalRun = await pollRun(started.id, key);
-      if (verb === "plan" && finalRun?.status === "completed") {
-        const approved = await waitForConfirm(
-          "Run `kirxil build` with this goal now?",
-          "The plan above is read-only — nothing has changed yet.",
-          "build",
-          "skip",
-        );
-        if (approved) void runGoal(rawGoal, "build");
-      }
-      // Real, deterministic check instead of trusting the model's own "Review" phase narration —
-      // same .kirxil.yml `verify:` pipeline `kirxil build`/`kirxil verify` use (verify.ts).
-      if (verb === "build" && finalRun?.status === "completed") {
-        const verifySteps = loadProjectConfig()?.verify;
-        if (verifySteps && verifySteps.length > 0) {
-          setNotice("Running verification pipeline (.kirxil.yml's verify:)...");
-          const verifyResult = await runVerifyPipeline(verifySteps, process.cwd());
-          setNotice(formatVerifyResultLines(verifyResult).join("\n"));
+        setNotice(null);
+        const instruction = verb ? buildVerbInstruction(verb, rawGoal) : rawGoal;
+        const goalText = buildGoal(instruction, dir);
+        const checkpointHash = await autoCheckpoint(process.cwd(), rawGoal);
+        if (checkpointHash) setNotice(`Checkpointed ${checkpointHash} — \`kirxil undo\` (from a shell) can revert to this.`);
+        let started;
+        try {
+          started = await api.runAgent(goalText, model === "nvidia" ? "auto" : model, maxSteps, runtime);
+        } catch (err) {
+          setNotice(err instanceof ApiError ? `Couldn't start that run: ${err.detail}` : "Couldn't start that run.");
+          return;
         }
+        const key = started.id;
+        activeRunIdRef.current = started.id;
+        setActiveRunId(started.id);
+        setActivity(verb === "plan" ? "Planning" : "Running");
+        setHistory((prev) => [...prev, { key, goal: rawGoal, run: { ...started, steps: [] }, isPlan: verb === "plan" }]);
+        const finalRun = await pollRun(started.id, key);
+        if (verb === "plan" && finalRun?.status === "completed") {
+          const approved = await waitForConfirm(
+            "Run `kirxil build` with this goal now?",
+            "The plan above is read-only — nothing has changed yet.",
+            "build",
+            "skip",
+          );
+          buildNext = approved;
+        }
+        // Real, deterministic check instead of trusting the model's own "Review" phase narration —
+        // same .kirxil.yml `verify:` pipeline `kirxil build`/`kirxil verify` use (verify.ts).
+        if (verb === "build" && finalRun?.status === "completed") {
+          const verifySteps = loadProjectConfig()?.verify;
+          if (verifySteps && verifySteps.length > 0) {
+            setNotice("Running verification pipeline (.kirxil.yml's verify:)...");
+            setActivity("Verifying");
+            const verifyResult = await runVerifyPipeline(verifySteps, process.cwd());
+            setNotice(formatVerifyResultLines(verifyResult).join("\n"));
+          }
+        }
+      } catch (err) {
+        setNotice(err instanceof Error ? err.message : "The task could not finish.");
+      } finally {
+        busyRef.current = false;
+        setActivity(null);
       }
+      if (buildNext) void runGoal(rawGoal, "build");
     },
-    [api, dir, model, maxSteps, pollRun, waitForConfirm],
+    [api, dir, model, runtime, maxSteps, pollRun, waitForConfirm],
   );
 
   async function handleSubmit(value: string) {
@@ -269,17 +319,70 @@ export function App({
     if (hist[hist.length - 1] !== trimmed) inputHistoryRef.current = [...hist, trimmed];
 
     if (trimmed === "/exit" || trimmed === "/quit") {
+      if (busyRef.current) {
+        setNotice("A task is still active. Stop it with Ctrl+C before exiting.");
+        return;
+      }
       exit();
       process.exit(0);
     }
     if (trimmed === "/help") {
       setNotice(
-        "/model [id] — list or switch models\n/cwd — show the current folder\n" +
+        "CHAT — conversation without tools; CODE — coding agent tasks\n/code <task> — run the coding agent\n/new — start a fresh chat\n" +
+          "Tab — switch Chat / Code; / on an empty prompt — choose Auto / NVIDIA\n/model — open model menu\n/cwd — show the current folder\n" +
           "/plan <goal> — investigate and show a read-only plan, with a real handoff into `kirxil build`\n" +
+          "/public <question> — Nemotron, non-sensitive question only (asks first)\n" +
           "/expand — toggle full tool output for the last run (long output is clipped by default)\n" +
           "/undo — revert to the last kirxil checkpoint (git reset --hard, asks first)\n/exit — quit\n" +
-          "↑/↓ — recall previously submitted goals/commands · Ctrl+L — clear this screen's history",
+          "Ctrl+K — command palette · ↑/↓ — input history · Ctrl+L — clear finished runs",
       );
+      return;
+    }
+    if (trimmed === "/public" || trimmed.startsWith("/public ") ||
+        (!trimmed.startsWith("/") && mode === "chat" && model === "nvidia")) {
+      const message = trimmed.startsWith("/public") ? trimmed.slice(7).trim() : trimmed;
+      if (!message) { setNotice("Usage: /public <non-sensitive question> — Nemotron, one-shot, no tools."); return; }
+      if (busyRef.current) { setNotice("Wait for the active task to finish first."); return; }
+      if (message.length > 4000) { setNotice("Public questions are limited to 4000 characters."); return; }
+      busyRef.current = true;
+      try {
+        const approved = await waitForConfirm(
+          "Send this non-sensitive question to NVIDIA Nemotron via OpenRouter?",
+          "NVIDIA logs usage for security and product improvement. Do NOT send secrets, private code, or personal data. " +
+            "Only the question below is sent; no project context, chat history, memory, or tools. This cannot detect/redact secrets for you.\n\n" + message,
+          "send once", "cancel",
+        );
+        if (!approved) { setNotice("Cancelled. Nothing sent to the public model."); return; }
+        setActivity("Nemotron · public question only");
+        const controller = new AbortController();
+        chatAbortRef.current = controller;
+        const response = await api.publicChat(message, controller.signal);
+        setChats((previous) => [...previous, { question: `[PUBLIC · standalone] ${message}`, answer: response.content }]);
+        setNotice(`Answered by ${response.provider} · ${response.model}. Not added to regular chat context.`);
+      } catch (err) {
+        setNotice(chatAbortRef.current?.signal.aborted ? "Stopped waiting; the public provider may still finish processing." :
+          err instanceof Error ? err.message : "Public model request failed.");
+      } finally {
+        chatAbortRef.current = null;
+        busyRef.current = false;
+        setActivity(null);
+      }
+      return;
+    }
+    if (trimmed === "/new") {
+      if (busyRef.current) { setNotice("Wait for the active task to finish first."); return; }
+      conversationRef.current = undefined;
+      setChats([]);
+      setNotice("New chat started. Previous conversations remain stored on the server.");
+      return;
+    }
+    if (trimmed === "/code" || trimmed.startsWith("/code ")) {
+      const task = trimmed.slice(5).trim();
+      if (!task) { setNotice("Usage: /code <task>. Plain text is chat without tools."); return; }
+      if (busyRef.current) { setNotice("A task is already active."); return; }
+      setMode("code");
+      if (model === "nvidia") setModel("auto");
+      void runGoal(task, "build");
       return;
     }
     if (trimmed === "/cwd") {
@@ -304,7 +407,7 @@ export function App({
       return;
     }
     if (trimmed === "/undo") {
-      if (activeRunIdRef.current) {
+      if (busyRef.current) {
         setNotice("A run is already in progress — wait for it to finish or Ctrl+C to stop it.");
         return;
       }
@@ -335,7 +438,7 @@ export function App({
         setNotice("Usage: /plan <goal>");
         return;
       }
-      if (activeRunIdRef.current) {
+      if (busyRef.current) {
         setNotice("A run is already in progress — wait for it to finish or Ctrl+C to stop it.");
         return;
       }
@@ -343,35 +446,71 @@ export function App({
       return;
     }
     if (trimmed === "/model" || trimmed.startsWith("/model ")) {
-      const arg = trimmed.slice("/model".length).trim();
-      if (arg) {
-        setModel(arg);
-        setNotice(`Switched to ${arg}.`);
-        return;
-      }
-      let models: ModelInfo[];
-      try {
-        models = await api.listModels();
-      } catch {
-        setNotice("Couldn't load the model list.");
-        return;
-      }
-      setNotice(models.map((m) => `${m.id === model ? "*" : " "} ${m.name} (${m.id}) — ${m.description}`).join("\n"));
+      if (busyRef.current) { setNotice("Wait for the active task before switching model."); return; }
+      const arg = trimmed.slice("/model".length).trim().toLowerCase();
+      if (!arg) setModelPickerOpen(true);
+      else if (arg === "auto" || arg === "nvidia") selectModel(arg);
+      else setNotice("Choose Auto or NVIDIA. Press / on an empty prompt to open the menu.");
       return;
     }
 
-    if (activeRunIdRef.current) {
+    if (trimmed.startsWith("/")) {
+      setNotice(`Unknown command: ${trimmed.split(/\s/)[0]}. Use Ctrl+K or /help to see commands.`);
+      return;
+    }
+    if (busyRef.current) {
       setNotice("A run is already in progress — wait for it to finish or Ctrl+C to stop it.");
       return;
     }
-    void runGoal(trimmed);
+    if (mode === "code") {
+      void runGoal(trimmed, "build");
+      return;
+    }
+    busyRef.current = true;
+    setActivity("Chatting · no tools");
+    setNotice(null);
+    const controller = new AbortController();
+    chatAbortRef.current = controller;
+    setChats((previous) => [...previous, { question: trimmed, answer: "Thinking…" }]);
+    try {
+      const response = await api.chat(trimmed, conversationRef.current, model, controller.signal);
+      conversationRef.current = response.conversation_id;
+      setNotice(`Answered by ${response.provider ?? "provider"} · ${response.model}`);
+      setChats((previous) => previous.map((entry, index) => index === previous.length - 1
+        ? { ...entry, answer: response.message.content } : entry));
+    } catch (err) {
+      const answer = controller.signal.aborted
+        ? "Stopped waiting for the response. The server may still finish this message."
+        : err instanceof Error ? `Chat failed: ${err.message}` : "Chat failed.";
+      setChats((previous) => previous.map((entry, index) => index === previous.length - 1 ? { ...entry, answer } : entry));
+    } finally {
+      chatAbortRef.current = null;
+      busyRef.current = false;
+      setActivity(null);
+    }
   }
 
   const lastRun = history.length > 0 ? history[history.length - 1]!.run : null;
 
+  function selectModel(choice: ModelChoice) {
+    setModel(choice);
+    setModelPickerOpen(false);
+    if (choice === "nvidia") {
+      setMode("chat");
+      setNotice("NVIDIA: public, standalone questions only. Each send requires confirmation; no project or chat history is shared.");
+    }
+  }
+
   return (
     <Box flexDirection="column">
-      <Banner api={api} dir={dir} hostRoot={hostRoot} model={model} projectName={projectName} />
+      <Banner api={api} dir={dir} hostRoot={hostRoot} model={model} projectName={projectName} runtime={runtime} compact={history.length > 0 || chats.length > 0} />
+      {chats.length > 0 && <Box flexDirection="column" marginBottom={1}>
+        <Text dimColor>CONVERSATION · no tools</Text>
+        {chats.map((chat, index) => <Box key={index} flexDirection="column" marginTop={1}>
+          <Text bold>› {chat.question}</Text>
+          <Text>{chat.answer}</Text>
+        </Box>)}
+      </Box>}
       {history.map((h) => (
         <Box key={h.key} flexDirection="column" marginBottom={1}>
           <Transcript
@@ -390,10 +529,18 @@ export function App({
         </Box>
       ))}
       {notice && (
-        <Box marginBottom={1}>
-          <Text dimColor>{notice}</Text>
+        <Box marginBottom={1} flexDirection="column" borderStyle="round" borderColor="gray" paddingX={1}>
+          <Text bold>SESSION</Text>
+          <Text>{notice}</Text>
         </Box>
       )}
+      <Box paddingX={1} marginBottom={0} flexWrap="wrap" columnGap={1}>
+        <Text bold={mode === "chat"} color={mode === "chat" ? "cyan" : "gray"}>{mode === "chat" ? "[CHAT]" : " CHAT "}</Text>
+        <Text bold={mode === "code"} color={mode === "code" ? "yellow" : "gray"}>{mode === "code" ? "[CODE]" : " CODE "}</Text>
+        <Text dimColor>·</Text>
+        <Text color="#8b7bff">{model === "nvidia" ? "NVIDIA · public only" : model === "auto" ? "Auto" : model}</Text>
+        <Text dimColor>· Tab mode · / model</Text>
+      </Box>
       {pendingConfirm ? (
         <Box
           flexDirection="column"
@@ -427,19 +574,33 @@ export function App({
             </Text>
           )}
         </Box>
+      ) : modelPickerOpen ? (
+        <ModelPicker current={model} onSelect={selectModel} onClose={() => setModelPickerOpen(false)} />
+      ) : paletteOpen ? (
+        <CommandPalette onClose={() => setPaletteOpen(false)} onSelect={(command) => {
+          setInput(command);
+          historyIndexRef.current = -1;
+          setPaletteOpen(false);
+        }} />
       ) : (
-        <Box borderStyle="round" borderColor="#8b7bff" paddingX={1}>
+        <Box borderStyle="round" borderColor={mode === "code" ? "yellow" : "#8b7bff"} paddingX={1}>
           <Text color="#8b7bff" bold>
             {">"}{" "}
           </Text>
           <TextInput
             value={input}
+            placeholder={activity ? "Task active…" : mode === "code" ? "Describe a coding task…" : model === "nvidia" ? "Ask a non-sensitive public question…" : "Type a message…"}
             onChange={(v) => {
               // A real edit while browsing history — not one of this component's own
               // programmatic setInput calls from the Up/Down handler above — snaps back to "not
               // browsing" so the next Up starts from the newest entry again, the current buffer
               // becoming the new draft.
               historyIndexRef.current = -1;
+              if (v === "/" && input === "") {
+                if (busyRef.current) setNotice("Wait for the active task before switching model.");
+                else setModelPickerOpen(true);
+                return;
+              }
               setInput(v);
             }}
             onSubmit={(v) => void handleSubmit(v)}
@@ -450,6 +611,8 @@ export function App({
         <StatusBar
           toolCalls={lastRun ? lastRun.steps.filter((s) => s.type === "tool_call").length : 0}
           testOutcomes={lastRun ? testAttemptOutcomes(lastRun.steps) : []}
+          activity={pendingConfirm ? "Awaiting approval" : activity ?? "Ready"}
+          awaitingApproval={!!pendingConfirm}
         />
       </Box>
     </Box>

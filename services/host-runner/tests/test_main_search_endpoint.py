@@ -9,9 +9,10 @@ from fastapi.testclient import TestClient
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     monkeypatch.setenv("HOST_ROOT", str(tmp_path))
+    monkeypatch.setenv("HOST_RUNNER_API_KEY", "test-host-key")
     from app.main import app
 
-    return TestClient(app)
+    return TestClient(app, headers={"X-Krixil-Host-Key": "test-host-key"})
 
 
 def test_search_returns_matches(tmp_path, client):

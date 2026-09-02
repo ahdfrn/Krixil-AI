@@ -39,6 +39,18 @@ describe("loadProjectConfig", () => {
     });
   });
 
+  it("reads a real agent.runtime", () => {
+    writeFileSync(join(root, ".kirxil.yml"), "agent:\n  runtime: hermes\n");
+    const config = loadProjectConfig(root);
+    expect(config?.agent?.runtime).toBe("hermes");
+  });
+
+  it("rejects an agent.runtime value that isn't native or hermes", () => {
+    writeFileSync(join(root, ".kirxil.yml"), "agent:\n  runtime: made-up\n");
+    expect(loadProjectConfig(root)).toBeNull();
+    expect(consoleErrorSpy).toHaveBeenCalled();
+  });
+
   it("reads a real verify: list", () => {
     writeFileSync(
       join(root, ".kirxil.yml"),

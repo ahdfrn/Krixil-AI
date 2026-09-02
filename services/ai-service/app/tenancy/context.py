@@ -11,6 +11,7 @@ class TenantContext:
     user_id: uuid.UUID
     role: str
     permissions: list[str]
+    workspace_root: str | None = None
 
     def has_permission(self, required: str) -> bool:
         return "*" in self.permissions or required in self.permissions

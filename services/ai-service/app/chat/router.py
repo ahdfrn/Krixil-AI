@@ -33,6 +33,7 @@ from app.rag.context import build_rag_context
 from app.schemas.chat import (
     ChatRequest,
     ChatResponse,
+    CitationOut,
     ConversationDetailOut,
     ConversationOut,
     ConversationRenameRequest,
@@ -44,6 +45,12 @@ from app.tenancy.dependencies import get_tenant_context
 router = APIRouter(tags=["chat"])
 logger = get_logger(__name__)
 model_router = ModelRouter()
+PLAIN_CHAT_SYSTEM = (
+    "You are Krixil AI. This is a conversation without tools or filesystem access. "
+    "Respond in the user's language. Use only this conversation's history when relevant. "
+    "Do not invent identities or file paths. Do not claim actions were performed. "
+    "For project changes, explain that /code <task> starts the coding agent."
+)
 
 # /chat/stream has no BackgroundTasks dependency available inside its hand-rolled generator (it's
 # not a normal Depends-based response), so memory extraction there uses asyncio.create_task
@@ -59,7 +66,7 @@ def _fire_and_forget(coro) -> None:
 
 
 def _model_kwargs(model_id: str | None) -> dict:
-    """"auto" and None both mean "use the provider's own configured default" — only a real,
+    """ "auto" and None both mean "use the provider's own configured default" — only a real,
     specific model id gets forwarded, as a `model=` kwarg CloudModelProvider already merges into
     its request payload, overriding its own default for just this call."""
     if model_id is None or model_id == "auto":
@@ -85,8 +92,14 @@ async def chat(
     )
 
     provider = model_router.get_provider()
-    memory_message = await build_memory_context(session, tenant_ctx)
-    rag_message, citations = await build_rag_context(session, tenant_ctx, provider, payload.message)
+    memory_message = None
+    rag_message: ModelMessage | None = None
+    citations: list[CitationOut] = []
+    if payload.allow_tools:
+        memory_message = await build_memory_context(session, tenant_ctx)
+        rag_message, citations = await build_rag_context(
+            session, tenant_ctx, provider, payload.message
+        )
 
     model_messages = context + [ModelMessage(role="user", content=payload.message)]
     if rag_message is not None:
@@ -94,9 +107,19 @@ async def chat(
     if memory_message is not None:
         model_messages = [memory_message] + model_messages
 
-    tool_calls = await run_chat_tools(
-        session, tenant_ctx, provider, model_messages, model_id=payload.model
-    )
+    tool_calls = []
+    if payload.allow_tools:
+        tool_calls = await run_chat_tools(
+            session, tenant_ctx, provider, model_messages, model_id=payload.model
+        )
+    else:
+        model_messages.insert(
+            0,
+            ModelMessage(
+                role="system",
+                content=PLAIN_CHAT_SYSTEM,
+            ),
+        )
 
     with MODEL_REQUEST_DURATION.labels(provider=provider.name, operation="generate").time():
         response = await provider.generate(model_messages, **_model_kwargs(payload.model))
@@ -107,15 +130,16 @@ async def chat(
     await short_term.append_message(
         redis, tenant_ctx.tenant_id, conversation.id, "assistant", response.content
     )
-    background_tasks.add_task(
-        extract_and_store_memories,
-        tenant_ctx.tenant_id,
-        tenant_ctx.user_id,
-        conversation.id,
-        conversation.title,
-        payload.message,
-        response.content,
-    )
+    if payload.allow_tools:
+        background_tasks.add_task(
+            extract_and_store_memories,
+            tenant_ctx.tenant_id,
+            tenant_ctx.user_id,
+            conversation.id,
+            conversation.title,
+            payload.message,
+            response.content,
+        )
     await record_usage(
         session,
         tenant_id=tenant_ctx.tenant_id,
@@ -139,11 +163,14 @@ async def chat(
         citation_count=len(citations),
     )
 
+    # Persist before HTTP delivery/background tasks so the next request can find this ID.
+    await session.commit()
     return ChatResponse(
         conversation_id=conversation.id,
         message=MessageOut.model_validate(assistant_message),
         model=response.model,
         citations=citations,
+        provider=response.provider or provider.name,
         tool_calls=tool_calls,
     )
 
@@ -185,10 +212,14 @@ async def chat_stream(
                 yield f"data: {json.dumps(conversation_payload)}\n\n"
 
                 provider = model_router.get_provider()
-                memory_message = await build_memory_context(session, tenant_ctx)
-                rag_message, citations = await build_rag_context(
-                    session, tenant_ctx, provider, payload.message
-                )
+                memory_message = None
+                rag_message = None
+                citations: list[CitationOut] = []
+                if payload.allow_tools:
+                    memory_message = await build_memory_context(session, tenant_ctx)
+                    rag_message, citations = await build_rag_context(
+                        session, tenant_ctx, provider, payload.message
+                    )
                 if citations:
                     citations_payload = {
                         "type": "citations",
@@ -201,10 +232,14 @@ async def chat_stream(
                     model_messages = [rag_message] + model_messages
                 if memory_message is not None:
                     model_messages = [memory_message] + model_messages
+                if not payload.allow_tools:
+                    model_messages.insert(0, ModelMessage(role="system", content=PLAIN_CHAT_SYSTEM))
 
-                tool_calls = await run_chat_tools(
-                    session, tenant_ctx, provider, model_messages, model_id=payload.model
-                )
+                tool_calls = []
+                if payload.allow_tools:
+                    tool_calls = await run_chat_tools(
+                        session, tenant_ctx, provider, model_messages, model_id=payload.model
+                    )
                 if tool_calls:
                     tool_calls_payload = {
                         "type": "tool_calls",
@@ -229,16 +264,17 @@ async def chat_stream(
                 await short_term.append_message(
                     redis, tenant_ctx.tenant_id, conversation.id, "assistant", full_content
                 )
-                _fire_and_forget(
-                    extract_and_store_memories(
-                        tenant_ctx.tenant_id,
-                        tenant_ctx.user_id,
-                        conversation.id,
-                        conversation.title,
-                        payload.message,
-                        full_content,
+                if payload.allow_tools:
+                    _fire_and_forget(
+                        extract_and_store_memories(
+                            tenant_ctx.tenant_id,
+                            tenant_ctx.user_id,
+                            conversation.id,
+                            conversation.title,
+                            payload.message,
+                            full_content,
+                        )
                     )
-                )
                 # Streaming responses don't carry a usage payload from most OpenAI-compatible
                 # APIs unless a special option is set — token counts aren't tracked here yet;
                 # non-streaming /chat is the accurate source for usage in Phase 1.

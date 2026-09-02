@@ -2,15 +2,18 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from prometheus_fastapi_instrumentator import Instrumentator
 
 from app import evaluation as _evaluation  # noqa: F401  # side-effect import: registers eval cases
 from app import tools as _tools  # noqa: F401  # side-effect import: registers every tool
 from app.agents.router import router as agents_router
+from app.ai.fallback import ProvidersUnavailable
 from app.ai.models_router import router as models_router
 from app.ai.router import aclose_providers
 from app.auth.router import router as auth_router
 from app.brain.router import router as brain_router
+from app.chat.public_router import router as public_chat_router
 from app.chat.router import router as chat_router
 from app.core.config import get_settings
 from app.core.logging import configure_logging, get_logger
@@ -42,6 +45,12 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title=settings.app_name, version="0.1.0", lifespan=lifespan)
 
+
+@app.exception_handler(ProvidersUnavailable)
+async def providers_unavailable_handler(request, error):
+    return JSONResponse(status_code=503, content={"detail": str(error)})
+
+
 app.add_middleware(RequestContextMiddleware)
 app.add_middleware(
     CORSMiddleware,
@@ -56,6 +65,7 @@ app.include_router(auth_router, prefix=settings.api_v1_prefix)
 app.include_router(brain_router, prefix=settings.api_v1_prefix)
 app.include_router(mcp_router, prefix=settings.api_v1_prefix)
 app.include_router(chat_router, prefix=settings.api_v1_prefix)
+app.include_router(public_chat_router, prefix=settings.api_v1_prefix)
 app.include_router(rag_router, prefix=settings.api_v1_prefix)
 app.include_router(tools_router, prefix=settings.api_v1_prefix)
 app.include_router(agents_router, prefix=settings.api_v1_prefix)

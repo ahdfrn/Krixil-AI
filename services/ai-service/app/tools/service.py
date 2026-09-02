@@ -1,6 +1,7 @@
 import asyncio
 import time
 import uuid
+from dataclasses import replace
 from datetime import UTC, datetime
 
 from fastapi import HTTPException, status
@@ -36,6 +37,8 @@ async def request_tool_execution(
     """Schema validation -> permission check -> risk check -> (execute now, or park pending
     approval) -> audit log. Matches the flow in docs/architecture/phase3.md 1:1."""
     tool = _get_tool_or_404(tool_name)
+    if tenant_ctx.workspace_root and not tool_name.startswith("host."):
+        raise HTTPException(status_code=403, detail="Project-scoped sessions only allow host tools")
 
     if not tenant_ctx.has_permission(tool.required_permission):
         raise HTTPException(
@@ -60,6 +63,7 @@ async def request_tool_execution(
         tenant_id=tenant_ctx.tenant_id,
         requested_by=tenant_ctx.user_id,
         tool_name=tool.name,
+        workspace_root=tenant_ctx.workspace_root,
         risk_level=tool.risk_level.value,
         input=validated_input.model_dump(mode="json"),
         status="pending_approval" if requires_approval else "running",
@@ -133,6 +137,7 @@ async def _block(
 async def _run(
     session, tenant_ctx: TenantContext, tool: Tool, execution: ToolExecution, validated_input
 ) -> None:
+    tenant_ctx = replace(tenant_ctx, workspace_root=execution.workspace_root)
     start = time.monotonic()
     with get_tracer().start_as_current_span("tool.execute") as span:
         span.set_attribute("tool.name", tool.name)
@@ -168,6 +173,19 @@ async def _run(
     await session.flush()
 
 
+async def _find_paused_agent_run(
+    session: AsyncSession, execution: ToolExecution
+) -> AgentRun | None:
+    return (
+        await session.execute(
+            select(AgentRun).where(
+                AgentRun.pending_execution_id == execution.id,
+                AgentRun.status == "waiting_approval",
+            )
+        )
+    ).scalar_one_or_none()
+
+
 async def _resolve_paused_agent_run(
     session: AsyncSession, execution: ToolExecution
 ) -> AgentRun | None:
@@ -185,15 +203,10 @@ async def _resolve_paused_agent_run(
     has to let the agent keep working after a HIGH-risk step is approved, not just hand back that
     one tool's result and quit. A rejection or a failed approved tool still ends the run: there's
     nothing useful to resume with (rejected) or the same failure would likely just repeat
-    (failed) — either way returns None so the caller doesn't schedule anything."""
-    agent_run = (
-        await session.execute(
-            select(AgentRun).where(
-                AgentRun.pending_execution_id == execution.id,
-                AgentRun.status == "waiting_approval",
-            )
-        )
-    ).scalar_one_or_none()
+    (failed) — either way returns None so the caller doesn't schedule anything. For a
+    runtime="hermes" run, the caller schedules resume_hermes_agent_in_background instead of
+    native run_agent — this function itself is runtime-agnostic, it just returns the row."""
+    agent_run = await _find_paused_agent_run(session, execution)
     if agent_run is None:
         return None
 
@@ -272,6 +285,10 @@ async def approve_execution(
             detail=f"Execution is not pending approval (status='{execution.status}')",
         )
 
+    paused_agent_run = await _find_paused_agent_run(session, execution)
+    if paused_agent_run is not None and paused_agent_run.runtime == "hermes":
+        return await _approve_hermes_execution(session, tenant_ctx, execution, paused_agent_run)
+
     tool = _get_tool_or_404(execution.tool_name)
     validated_input = tool.input_model.model_validate(execution.input)
 
@@ -283,6 +300,49 @@ async def approve_execution(
     await _run(session, tenant_ctx, tool, execution, validated_input)
     resume_target = await _resolve_paused_agent_run(session, execution)
     return execution, resume_target
+
+
+async def _approve_hermes_execution(
+    session: AsyncSession,
+    tenant_ctx: TenantContext,
+    execution: ToolExecution,
+    agent_run: AgentRun,
+) -> tuple[ToolExecution, AgentRun | None]:
+    """A Hermes-bridged tool call (app/agents/hermes_runtime.py) has no local Krixil tool.handler
+    to run — Hermes itself already knows how to execute the tool it asked about. Approving it
+    means telling Hermes's own run to proceed, not running anything here. Krixil's Permission
+    Engine still owns the decision — same endpoint, same audit log, same approve/reject flow as
+    every other tool — only the actual execution happens on Hermes's side."""
+    from app.agents.hermes_client import HermesClientError, resolve_hermes_approval
+
+    execution.approved_by = tenant_ctx.user_id
+    execution.approved_at = datetime.now(UTC)
+
+    try:
+        await resolve_hermes_approval(
+            agent_run.external_run_id or "", "once", execution.input.get("request_id")
+        )
+    except HermesClientError as exc:
+        execution.status = "failed"
+        execution.completed_at = datetime.now(UTC)
+        execution.error_message = f"Couldn't notify Hermes of approval: {exc}"
+        await session.flush()
+        resume_target = await _resolve_paused_agent_run(session, execution)
+        return execution, resume_target
+
+    execution.status = "running"
+    agent_run.status = "running"
+    await session.flush()
+    await record_audit_log(
+        session,
+        tenant_id=tenant_ctx.tenant_id,
+        user_id=tenant_ctx.user_id,
+        action="tool.approved",
+        resource=execution.tool_name,
+        metadata={"execution_id": str(execution.id), "runtime": "hermes"},
+    )
+    # Preserve the execution link until a matching Hermes tool result arrives.
+    return execution, agent_run
 
 
 async def reject_execution(
@@ -300,6 +360,8 @@ async def reject_execution(
             detail=f"Execution is not pending approval (status='{execution.status}')",
         )
 
+    paused_agent_run = await _find_paused_agent_run(session, execution)
+
     execution.status = "rejected"
     execution.error_message = reason
     execution.completed_at = datetime.now(UTC)
@@ -312,6 +374,21 @@ async def reject_execution(
         metadata={"execution_id": str(execution.id), "reason": reason},
     )
     await session.flush()
+
+    if paused_agent_run is not None and paused_agent_run.runtime == "hermes":
+        from app.agents.hermes_client import HermesClientError, resolve_hermes_approval
+
+        try:
+            await resolve_hermes_approval(
+                paused_agent_run.external_run_id or "", "deny", execution.input.get("request_id")
+            )
+        except HermesClientError:
+            logger.warning(
+                "hermes_reject_notify_failed",
+                execution_id=str(execution.id),
+                run_id=paused_agent_run.external_run_id,
+            )
+
     # Rejection never resumes the run — see _resolve_paused_agent_run's docstring.
     await _resolve_paused_agent_run(session, execution)
     return execution

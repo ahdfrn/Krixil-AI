@@ -99,6 +99,11 @@ export async function runGoalOnce(
   // .kirxil.yml's real `verify:` pipeline for real (see verify.ts) instead of trusting the
   // model's own "Review" phase narration. Silently a no-op when no `verify:` list is configured.
   runVerifyAfter?: boolean,
+  // Which AgentRuntime executes this run — "native" (default) or "hermes" (proxied to a real
+  // Hermes instance, see app/agents/hermes_runtime.py). Precedence resolved by the caller
+  // (index.ts's runInstruction/runPlanInstruction): --runtime flag > .kirxil.yml's agent.runtime
+  // > "native".
+  runtime?: "native" | "hermes",
 ): Promise<void> {
   const goalText = buildGoal(instruction, dir);
   console.log(`› ${instruction}\n`);
@@ -111,7 +116,7 @@ export async function runGoalOnce(
 
   let started;
   try {
-    started = await api.runAgent(goalText, model, maxSteps);
+    started = await api.runAgent(goalText, model, maxSteps, runtime);
   } catch (err) {
     console.error(err instanceof ApiError ? `Couldn't start that run: ${err.detail}` : "Couldn't start that run.");
     process.exitCode = 1;
@@ -195,6 +200,7 @@ export async function runGoalOnce(
         maxSteps,
         undefined,
         true,
+        runtime,
       );
       return;
     }

@@ -1,6 +1,10 @@
 import sys
 from pathlib import Path
 
+import pytest
+from pydantic import ValidationError
+
+from app.schemas.mcp import MCPServerCreate
 from tests.helpers import auth_headers, register
 
 _TEST_SERVER_SCRIPT = str(Path(__file__).parent / "fixtures" / "mcp_test_server.py")
@@ -40,6 +44,45 @@ async def test_adding_a_duplicate_name_returns_409(client):
     await _add_test_server(client, headers)
     dup_resp = await _add_test_server(client, headers)
     assert dup_resp.status_code == 409
+
+
+def test_stdio_transport_without_command_is_rejected():
+    with pytest.raises(ValidationError, match="`command` is required"):
+        MCPServerCreate(name="x", transport="stdio")
+
+
+def test_sse_transport_without_url_is_rejected():
+    with pytest.raises(ValidationError, match="`url` is required"):
+        MCPServerCreate(name="x", transport="sse")
+
+
+def test_sse_transport_with_command_is_rejected():
+    with pytest.raises(ValidationError, match="only valid for"):
+        MCPServerCreate(name="x", transport="sse", url="http://example.com", command="npx")
+
+
+def test_remote_transport_rejects_a_non_http_url():
+    with pytest.raises(ValidationError, match='must start with "http'):
+        MCPServerCreate(name="x", transport="sse", url="ftp://example.com")
+
+
+async def test_header_values_are_redacted_in_api_responses(client):
+    registered = await register(client)
+    headers = auth_headers(registered["access_token"])
+
+    resp = await client.post(
+        "/api/v1/mcp/servers",
+        json={
+            "name": "remote-with-secret",
+            "transport": "sse",
+            "url": "http://127.0.0.1:1/sse",
+            "headers": {"Authorization": "Bearer super-secret-token"},
+        },
+        headers=headers,
+    )
+    assert resp.status_code == 200
+    assert resp.json()["headers"] == {"Authorization": "***"}
+    assert resp.json()["command"] is None
 
 
 async def test_env_values_are_redacted_in_api_responses(client):
@@ -91,7 +134,9 @@ async def test_mcp_list_servers_tool_lists_configured_servers(client):
 
     resp = await client.post("/api/v1/tools/mcp.list_servers/execute", json={}, headers=headers)
     assert resp.status_code == 200
-    assert resp.json()["output"]["servers"] == [{"name": "test", "command": sys.executable}]
+    assert resp.json()["output"]["servers"] == [
+        {"name": "test", "transport": "stdio", "command": sys.executable, "url": None}
+    ]
 
 
 async def test_mcp_list_tools_tool_connects_for_real(client):
