@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
   buildToolCallArgsLookup,
-  countTestAttempts,
   describeApprovalPrompt,
   describeInFlightStep,
   describeObservation,
@@ -9,6 +8,9 @@ import {
   planPanelLines,
   summarizeToolCall,
   swarmChildStatusIcon,
+  testAttemptOutcomes,
+  testOutcomesLabel,
+  trimLines,
 } from "../render.js";
 import type { AgentStep } from "../api.js";
 
@@ -241,22 +243,78 @@ describe("findInFlightToolCall", () => {
   });
 });
 
-describe("countTestAttempts", () => {
-  it("counts only run_command calls that look like a test invocation", () => {
+describe("testAttemptOutcomes", () => {
+  it("reads the real pass/fail outcome from each test call's own observation", () => {
     const steps: AgentStep[] = [
       step({ step_number: 1, type: "tool_call", tool_name: "host.run_command", content: { arguments: { command: "pytest -q" } } }),
       step({ step_number: 1, type: "observation", tool_name: "host.run_command", content: { exit_code: 1 } }),
       step({ step_number: 2, type: "tool_call", tool_name: "host.run_command", content: { arguments: { command: "ls" } } }),
       step({ step_number: 3, type: "tool_call", tool_name: "host.run_command", content: { arguments: { command: "npm test" } } }),
+      step({ step_number: 3, type: "observation", tool_name: "host.run_command", content: { exit_code: 0 } }),
     ];
-    expect(countTestAttempts(steps)).toBe(2);
+    expect(testAttemptOutcomes(steps)).toEqual(["failed", "passed"]);
   });
 
-  it("returns 0 when there are no run_command calls at all", () => {
+  it("marks a test call with no observation yet as pending, not dropped", () => {
+    const steps: AgentStep[] = [
+      step({ step_number: 1, type: "tool_call", tool_name: "host.run_command", content: { arguments: { command: "npm test" } } }),
+    ];
+    expect(testAttemptOutcomes(steps)).toEqual(["pending"]);
+  });
+
+  it("treats a timed-out or errored test command as a failure, not a pass", () => {
+    const steps: AgentStep[] = [
+      step({ step_number: 1, type: "tool_call", tool_name: "host.run_command", content: { arguments: { command: "pytest -q" } } }),
+      step({ step_number: 1, type: "observation", tool_name: "host.run_command", content: { exit_code: 0, timed_out: true } }),
+      step({ step_number: 2, type: "tool_call", tool_name: "host.run_command", content: { arguments: { command: "pytest -q" } } }),
+      step({ step_number: 2, type: "observation", tool_name: "host.run_command", content: { error: "Blocked: ..." } }),
+    ];
+    expect(testAttemptOutcomes(steps)).toEqual(["failed", "failed"]);
+  });
+
+  it("returns an empty sequence when there are no run_command calls at all", () => {
     const steps: AgentStep[] = [
       step({ step_number: 1, type: "tool_call", tool_name: "host.read_file", content: { arguments: { path: "a.py" } } }),
     ];
-    expect(countTestAttempts(steps)).toBe(0);
+    expect(testAttemptOutcomes(steps)).toEqual([]);
+  });
+});
+
+describe("testOutcomesLabel", () => {
+  it("returns null for an empty sequence so callers can skip the line", () => {
+    expect(testOutcomesLabel([])).toBeNull();
+  });
+
+  it("renders a real mark per attempt and labels a passing final attempt", () => {
+    expect(testOutcomesLabel(["failed", "failed", "passed"])).toBe("✗ ✗ ✓ (passing)");
+  });
+
+  it("labels a run that's still failing after its last resolved attempt", () => {
+    expect(testOutcomesLabel(["failed", "failed"])).toBe("✗ ✗ (still failing)");
+  });
+
+  it("labels an in-flight attempt as running", () => {
+    expect(testOutcomesLabel(["failed", "pending"])).toBe("✗ … (running)");
+  });
+});
+
+describe("trimLines", () => {
+  it("leaves short output untouched regardless of expand", () => {
+    const lines = ["a", "b", "c"];
+    expect(trimLines(lines)).toEqual(lines);
+    expect(trimLines(lines, true)).toEqual(lines);
+  });
+
+  it("clips long output and names the real number of hidden lines by default", () => {
+    const lines = Array.from({ length: 45 }, (_, i) => `line ${i}`);
+    const result = trimLines(lines);
+    expect(result).toHaveLength(41);
+    expect(result[40]).toBe("… and 5 more lines");
+  });
+
+  it("returns every real line, uncapped, when expand is true", () => {
+    const lines = Array.from({ length: 45 }, (_, i) => `line ${i}`);
+    expect(trimLines(lines, true)).toEqual(lines);
   });
 });
 

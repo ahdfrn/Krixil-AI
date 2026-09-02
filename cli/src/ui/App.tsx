@@ -5,13 +5,13 @@ import { ApiError, KrixilApi, type AgentRun, type ModelInfo } from "../api.js";
 import { autoCheckpoint, diffStatSinceCheckpoint, findLastCheckpoint, resetToBeforeCheckpoint } from "../checkpoint.js";
 import { buildGoal } from "../goal.js";
 import { loadProjectConfig } from "../projectConfig.js";
-import { countTestAttempts, describeApprovalPrompt } from "../render.js";
+import { describeApprovalPrompt, testAttemptOutcomes } from "../render.js";
 import { buildVerbInstruction } from "../verbs.js";
 import { formatVerifyResultLines, runVerifyPipeline } from "../verify.js";
 import { Banner } from "./Banner.js";
 import { PlanPanel } from "./PlanPanel.js";
 import { StatusBar } from "./StatusBar.js";
-import { Transcript } from "./Transcript.js";
+import { RunSummary, Transcript } from "./Transcript.js";
 
 interface PendingConfirm {
   title: string;
@@ -30,6 +30,9 @@ interface HistoryEntry {
   // PlanPanel instead of plain text, with a real "run kirxil build with this goal now?" handoff
   // once it completes (see runGoal's verb param below).
   isPlan?: boolean;
+  // Toggled by `/expand` — content beyond MAX_OUTPUT_LINES was never printed at all, so this
+  // reveals real content rather than un-clipping something already visible.
+  expanded?: boolean;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -65,6 +68,14 @@ export function App({
   const [typedConfirmValue, setTypedConfirmValue] = useState("");
   const activeRunIdRef = useRef<string | null>(null);
   const confirmResolveRef = useRef<((approved: boolean) => void) | null>(null);
+  // Real shell-style Up/Down history over what was actually submitted (goals and /commands
+  // alike) — inputHistoryRef mirrors state in a ref too since useInput's callback closes over
+  // stale state otherwise. historyIndexRef of -1 means "not browsing, showing the live draft";
+  // draftRef holds what was being typed before the first Up so Down can restore it, the same way
+  // a real shell does.
+  const inputHistoryRef = useRef<string[]>([]);
+  const historyIndexRef = useRef<number>(-1);
+  const draftRef = useRef<string>("");
 
   const resolveConfirm = useCallback((approved: boolean) => {
     confirmResolveRef.current?.(approved);
@@ -96,6 +107,42 @@ export function App({
       } else {
         exit();
         process.exit(0);
+      }
+      return;
+    }
+    // Everything below only makes sense against the plain goal prompt, not while a typed-CONFIRM
+    // dialog (its own separate typedConfirmValue state) is open — the branches above already
+    // return for every other confirm shape, but a CRITICAL typed-confirm falls through here for
+    // any key except Escape, so this needs its own explicit guard.
+    if (pendingConfirm) return;
+    // Clears the visible run history the same way a real terminal's Ctrl+L/`clear` does — Ink
+    // appends to normal scrollback rather than taking over an alt-screen, so this can't erase what
+    // your terminal already printed, only what this app renders going forward.
+    if (key.ctrl && char === "l") {
+      setHistory([]);
+      return;
+    }
+    if (key.upArrow) {
+      const hist = inputHistoryRef.current;
+      if (hist.length === 0) return;
+      if (historyIndexRef.current === -1) {
+        draftRef.current = input;
+        historyIndexRef.current = hist.length - 1;
+      } else if (historyIndexRef.current > 0) {
+        historyIndexRef.current -= 1;
+      }
+      setInput(hist[historyIndexRef.current]!);
+      return;
+    }
+    if (key.downArrow) {
+      const hist = inputHistoryRef.current;
+      if (historyIndexRef.current === -1) return;
+      if (historyIndexRef.current < hist.length - 1) {
+        historyIndexRef.current += 1;
+        setInput(hist[historyIndexRef.current]!);
+      } else {
+        historyIndexRef.current = -1;
+        setInput(draftRef.current);
       }
     }
   });
@@ -216,6 +263,11 @@ export function App({
     const trimmed = value.trim();
     if (!trimmed) return;
 
+    historyIndexRef.current = -1;
+    draftRef.current = "";
+    const hist = inputHistoryRef.current;
+    if (hist[hist.length - 1] !== trimmed) inputHistoryRef.current = [...hist, trimmed];
+
     if (trimmed === "/exit" || trimmed === "/quit") {
       exit();
       process.exit(0);
@@ -224,12 +276,31 @@ export function App({
       setNotice(
         "/model [id] — list or switch models\n/cwd — show the current folder\n" +
           "/plan <goal> — investigate and show a read-only plan, with a real handoff into `kirxil build`\n" +
-          "/undo — revert to the last kirxil checkpoint (git reset --hard, asks first)\n/exit — quit",
+          "/expand — toggle full tool output for the last run (long output is clipped by default)\n" +
+          "/undo — revert to the last kirxil checkpoint (git reset --hard, asks first)\n/exit — quit\n" +
+          "↑/↓ — recall previously submitted goals/commands · Ctrl+L — clear this screen's history",
       );
       return;
     }
     if (trimmed === "/cwd") {
       setNotice(`Working in ${dir} under ${hostRoot}.`);
+      return;
+    }
+    if (trimmed === "/expand") {
+      if (history.length === 0) {
+        setNotice("Nothing to expand yet.");
+        return;
+      }
+      const lastKey = history[history.length - 1]!.key;
+      let nowExpanded = false;
+      setHistory((prev) =>
+        prev.map((h) => {
+          if (h.key !== lastKey) return h;
+          nowExpanded = !h.expanded;
+          return { ...h, expanded: nowExpanded };
+        }),
+      );
+      setNotice(nowExpanded ? "Showing full tool output for the last run." : "Back to clipped tool output.");
       return;
     }
     if (trimmed === "/undo") {
@@ -308,12 +379,14 @@ export function App({
             steps={h.isPlan ? h.run.steps.filter((s) => s.type !== "final_response") : h.run.steps}
             status={h.run.status}
             elapsedSeconds={h.run.id === activeRunId ? elapsed : 0}
+            expanded={h.expanded ?? false}
           />
           {h.isPlan && h.run.status === "completed" && h.run.final_response && (
             <Box marginTop={1}>
               <PlanPanel planText={h.run.final_response} />
             </Box>
           )}
+          {!h.isPlan && <RunSummary steps={h.run.steps} status={h.run.status} />}
         </Box>
       ))}
       {notice && (
@@ -359,13 +432,24 @@ export function App({
           <Text color="#8b7bff" bold>
             {">"}{" "}
           </Text>
-          <TextInput value={input} onChange={setInput} onSubmit={(v) => void handleSubmit(v)} />
+          <TextInput
+            value={input}
+            onChange={(v) => {
+              // A real edit while browsing history — not one of this component's own
+              // programmatic setInput calls from the Up/Down handler above — snaps back to "not
+              // browsing" so the next Up starts from the newest entry again, the current buffer
+              // becoming the new draft.
+              historyIndexRef.current = -1;
+              setInput(v);
+            }}
+            onSubmit={(v) => void handleSubmit(v)}
+          />
         </Box>
       )}
       <Box marginTop={1}>
         <StatusBar
           toolCalls={lastRun ? lastRun.steps.filter((s) => s.type === "tool_call").length : 0}
-          testAttempts={lastRun ? countTestAttempts(lastRun.steps) : 0}
+          testOutcomes={lastRun ? testAttemptOutcomes(lastRun.steps) : []}
         />
       </Box>
     </Box>

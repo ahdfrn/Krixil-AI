@@ -7,13 +7,16 @@
 
 import type { AgentStep } from "./api.js";
 
-const FILE_TOOLS = new Set(["host.list_files"]);
-const READ_TOOLS = new Set(["host.read_file"]);
-const WRITE_TOOLS = new Set(["host.write_file"]);
-const EDIT_TOOLS = new Set(["host.edit_file"]);
-const SEARCH_TOOLS = new Set(["host.search_files"]);
-const DELETE_TOOLS = new Set(["host.delete_file"]);
-const RUN_TOOLS = new Set(["host.run_command"]);
+// Every host.* tool has a code.* twin with identical semantics, scoped to the sandboxed workspace
+// instead of the real host filesystem (app/tools/code_tools.py mirrors app/tools/host_tools.py
+// name-for-name) — both need to render the same way here, not just the host.* one.
+const FILE_TOOLS = new Set(["host.list_files", "code.list_files"]);
+const READ_TOOLS = new Set(["host.read_file", "code.read_file"]);
+const WRITE_TOOLS = new Set(["host.write_file", "code.write_file"]);
+const EDIT_TOOLS = new Set(["host.edit_file", "code.edit_file"]);
+const SEARCH_TOOLS = new Set(["host.search_files", "code.search_files"]);
+const DELETE_TOOLS = new Set(["host.delete_file", "code.delete_file"]);
+const RUN_TOOLS = new Set(["host.run_command", "code.run_command"]);
 export const MAX_LISTED_ENTRIES = 20;
 export const MAX_OUTPUT_LINES = 40;
 
@@ -67,17 +70,47 @@ export function describeInFlightStep(toolName: string | null, args: Record<strin
   return "Working…";
 }
 
-/** How many of the real tool_call steps in this transcript look like a test-runner invocation —
- * a real count over real commands, not a fabricated "self-healing loop" attempt counter. */
-export function countTestAttempts(steps: AgentStep[]): number {
-  let count = 0;
+export type TestOutcome = "passed" | "failed" | "pending";
+
+/** The real pass/fail sequence of every test-runner invocation in this transcript, in order — the
+ * self-healing loop's own real retry-and-fix cycle (app/agents/runner.py's MAX_RETRIES), read
+ * back from the actual tool_call/observation pairs rather than a fabricated named state machine
+ * ("DIAGNOSE"/"FIX" aren't real backend states this loop tags steps with). "pending" is a real
+ * attempt that's been started but has no observation yet (still running, or paused on a HIGH-risk
+ * approval) — kept in the sequence rather than dropped, so a live count doesn't jump when it
+ * resolves. */
+export function testAttemptOutcomes(steps: AgentStep[]): TestOutcome[] {
+  const observationByStep = new Map<number, AgentStep>();
+  for (const step of steps) {
+    if (step.type === "observation") observationByStep.set(step.step_number, step);
+  }
+  const outcomes: TestOutcome[] = [];
   for (const step of steps) {
     if (step.type !== "tool_call" || !step.tool_name || !RUN_TOOLS.has(step.tool_name)) continue;
     const args = (step.content.arguments as Record<string, unknown>) ?? {};
     const command = typeof args.command === "string" ? args.command : "";
-    if (TEST_COMMAND_PATTERN.test(command)) count++;
+    if (!TEST_COMMAND_PATTERN.test(command)) continue;
+    const observation = observationByStep.get(step.step_number);
+    if (!observation) {
+      outcomes.push("pending");
+      continue;
+    }
+    const content = observation.content;
+    const passed = !("error" in content) && content.exit_code === 0 && content.timed_out !== true;
+    outcomes.push(passed ? "passed" : "failed");
   }
-  return count;
+  return outcomes;
+}
+
+/** A compact real timeline for the self-healing loop — "✗ ✗ ✓ (passing)" — or null when there
+ * were no test attempts at all, so callers can skip the line entirely rather than show a hollow
+ * one. */
+export function testOutcomesLabel(outcomes: TestOutcome[]): string | null {
+  if (outcomes.length === 0) return null;
+  const marks = outcomes.map((o) => (o === "passed" ? "✓" : o === "failed" ? "✗" : "…")).join(" ");
+  const last = outcomes[outcomes.length - 1];
+  const state = last === "passed" ? "passing" : last === "pending" ? "running" : "still failing";
+  return `${marks} (${state})`;
 }
 
 /** The most recent tool_call step that doesn't have a matching observation yet (same
@@ -110,8 +143,11 @@ export function planPanelLines(planText: string, width: number = PLAN_PANEL_WIDT
   ];
 }
 
-export function trimLines(lines: string[]): string[] {
-  if (lines.length <= MAX_OUTPUT_LINES) return lines;
+/** `expand: true` (the REPL's `/expand` toggle) bypasses the cap entirely — the content beyond
+ * MAX_OUTPUT_LINES was never printed at all otherwise, not just scrolled off-screen, so there's
+ * real content to reveal here, not a cosmetic clamp. */
+export function trimLines(lines: string[], expand = false): string[] {
+  if (expand || lines.length <= MAX_OUTPUT_LINES) return lines;
   return [...lines.slice(0, MAX_OUTPUT_LINES), `… and ${lines.length - MAX_OUTPUT_LINES} more lines`];
 }
 

@@ -91,7 +91,7 @@ Fixed — the empty-input case now returns early instead of indexing into an emp
 │ >                                                 │
 ╰──────────────────────────────────────────────────╯
 ╭──────────────────────────────────────────────────╮
-│ 1 tool call · +3/-1          /help /model /cwd /undo /exit │
+│ 1 tool call · tests ✓ (passing) · +3/-1    /help /model /cwd /expand /undo /exit │
 ╰──────────────────────────────────────────────────╯
 ```
 
@@ -100,8 +100,24 @@ a clear message and exits rather than crashing. `Ctrl+C` stops a run in progress
 web app's "esc to interrupt" does; `/model [id]` lists or switches models, `/cwd` shows the current
 folder, `/plan <goal>` shows a read-only plan in a bordered panel with a real handoff into
 `kirxil build`, `/undo` reverts to the last checkpoint, `/exit` quits. A persistent status bar at
-the bottom shows the real tool-call count, real test-attempt count (if any), and real
-`git diff --stat`-derived change stats for the run in progress.
+the bottom shows the real tool-call count, the real self-healing pass/fail sequence (if any test
+attempts happened), and real `git diff --stat`-derived change stats for the run in progress.
+
+Any tool output over 40 lines is clipped by default (`… and N more lines`) — that content was
+never printed at all, not just scrolled off-screen. `/expand` toggles the last run between clipped
+and full output; running it again re-clips.
+
+`↑`/`↓` recall previously submitted goals and `/commands`, real shell-history style — editing a
+recalled line and pressing `↑` again starts back from the newest entry rather than jumping into
+unrelated history. `Ctrl+L` clears this screen's visible run history (Ink appends to your
+terminal's normal scrollback rather than taking over an alt-screen, so this can only clear what
+this app itself has drawn, not your terminal's own history above it).
+
+Deliberately not built here: a `Ctrl+K` command palette (there are only 6 real slash commands —
+a searchable overlay would be decorative for that few, not genuinely useful) and `Tab`-style panel
+navigation or a dedicated "agent panel" (this UI doesn't have multiple panels or a persistent
+per-agent view to navigate between outside of `kirxil swarm`'s own tree, which already has its own
+command).
 
 ### Command surface (PRD §33)
 
@@ -163,7 +179,11 @@ no enforcement:
   approval pause, since `host.run_command` always pauses, so every real attempt does too. Once a
   test attempt both fails and uses up the last retry, the run stops itself with an honest message
   naming the real attempt count and the real last failure, instead of silently retrying forever on
-  the generic step budget or claiming success it didn't earn.
+  the generic step budget or claiming success it didn't earn. The real pass/fail sequence is
+  visible as it happens — the persistent status bar and each run's own summary line show it as
+  `tests ✗ ✗ ✓ (passing)`, one real mark per attempt, read from that attempt's own observation
+  (`render.ts`'s `testAttemptOutcomes`) — not a fabricated named state machine, since the backend
+  doesn't tag steps with phase labels like "diagnosing" or "fixing" to draw one from honestly.
 - **Verification** — a real, project-configurable pipeline: `.kirxil.yml`'s `verify:` list (see
   below) runs for real, in order, via `kirxil verify` or automatically after `kirxil build`
   completes — stopping at the first real non-zero exit, reporting the real output. Deliberately
@@ -209,6 +229,26 @@ as a clean JSON array — the run fails honestly with a clear message rather tha
 sub-tasks or silently running the goal as a single-member "swarm." Not built: dependency-aware
 sequencing between sub-tasks (every one runs independently; there's no "wait for this other
 sub-task's result first" yet).
+
+In a real terminal (not piped/redirected), `kirxil swarm` draws a live orchestrator tree instead
+of the append-only log above — one real branch per sub-task, redrawn in place as each child's own
+status and tool-call count change (`GET /agents/swarm/{id}/status`'s `children` are full,
+individually-pollable `AgentRun`s, not a lightweight fabricated summary):
+
+```
+› make this application production ready
+
+◉ ORCHESTRATOR — 2 sub-tasks
+  ├─ ✓ Set up application logging and monitoring tools (6 tool calls — completed)
+  └─ ✓ Implement database connection pooling and error handling (4 tool calls — completed)
+
+SYNTHESIS
+...
+```
+
+The plain log stays the scripted/piped fallback (`kirxil swarm ... > log.txt` still works exactly
+as before) — same TTY-vs-pipe split `kirxil run` already has between the interactive REPL and
+`runOnce.ts`.
 
 ### Project Brain (PRD §13)
 

@@ -27,6 +27,7 @@ import { findConfigFile, loadProjectConfig } from "./projectConfig.js";
 import { confirm, prompt } from "./prompt.js";
 import { swarmChildStatusIcon } from "./render.js";
 import { App } from "./ui/App.js";
+import { SwarmTree } from "./ui/SwarmTree.js";
 import { buildVerbInstruction, VERBS } from "./verbs.js";
 import { printVerifyResult, runVerifyPipeline } from "./verify.js";
 
@@ -205,6 +206,22 @@ program
       process.exitCode = 1;
       return;
     }
+
+    // A real TTY gets the live orchestrator tree (SwarmTree — one line per real sub-task,
+    // redrawn in place); piped/redirected output (scripting, CI logs) keeps the original
+    // append-only console.log loop below, same host.run_command'kirxil run` vs the REPL split.
+    if (process.stdout.isTTY) {
+      const { waitUntilExit } = render(React.createElement(SwarmTree, { api, goal, swarmRunId: started.id }));
+      await waitUntilExit();
+      try {
+        const finalSwarm = await api.getSwarmStatus(started.id);
+        if (finalSwarm.status !== "completed") process.exitCode = 1;
+      } catch {
+        process.exitCode = 1;
+      }
+      return;
+    }
+
     console.log("Decomposing into sub-tasks and running them in parallel...\n");
 
     const printedStatus = new Map<string, string>();

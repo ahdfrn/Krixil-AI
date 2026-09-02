@@ -11,11 +11,12 @@ import { loadProjectConfig } from "./projectConfig.js";
 import { confirm, prompt } from "./prompt.js";
 import {
   buildToolCallArgsLookup,
-  countTestAttempts,
   describeApprovalPrompt,
   describeObservation,
   planPanelLines,
   summarizeToolCall,
+  testAttemptOutcomes,
+  testOutcomesLabel,
   trimLines,
 } from "./render.js";
 import { buildVerbInstruction } from "./verbs.js";
@@ -161,10 +162,10 @@ export async function runGoalOnce(
   if (run.error_message) console.error(run.error_message);
 
   const toolCalls = run.steps.filter((s) => s.type === "tool_call").length;
-  const testAttempts = countTestAttempts(run.steps);
+  const testsLabel = testOutcomesLabel(testAttemptOutcomes(run.steps));
   const changes = await workingTreeChangeSummary(process.cwd());
   const summaryParts = [`${toolCalls} tool call${toolCalls === 1 ? "" : "s"}`];
-  if (testAttempts > 0) summaryParts.push(`${testAttempts} test attempt${testAttempts === 1 ? "" : "s"}`);
+  if (testsLabel) summaryParts.push(`tests ${testsLabel}`);
   if (changes.insertions > 0 || changes.deletions > 0) summaryParts.push(`+${changes.insertions}/-${changes.deletions}`);
   console.log(summaryParts.join(" · "));
 
